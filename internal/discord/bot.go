@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -112,18 +113,43 @@ func (b *Bot) Start() error {
 		return fmt.Errorf("opening discord websocket connection: %w", err)
 	}
 
-	// Bulk-overwrite guild commands to ensure immediate registration in server
-	_, err := b.session.ApplicationCommandBulkOverwrite(
-		b.session.State.User.ID,
-		b.cfg.GuildID,
-		b.registeredCmds,
-	)
+	// Safely resolve the bot's application ID without relying on the asynchronous Ready event
+	appID, err := b.resolveAppID()
 	if err != nil {
 		_ = b.session.Close()
-		return fmt.Errorf("registering slash commands with guild %s: %w", b.cfg.GuildID, err)
+		return fmt.Errorf("resolving bot application identity: %w", err)
 	}
 
-	b.logger.Info("slash commands synchronized with guild", "count", len(b.registeredCmds))
+	// Bulk-overwrite guild commands to ensure immediate registration in server
+	if len(b.registeredCmds) > 0 {
+		_, err := b.session.ApplicationCommandBulkOverwrite(
+			appID,
+			b.cfg.GuildID,
+			b.registeredCmds,
+		)
+		if err != nil {
+			var restErr *discordgo.RESTError
+			if errors.As(err, &restErr) && restErr.Message != nil && restErr.Message.Code == 50001 {
+				b.logger.Error("failed to register slash commands: missing 'applications.commands' OAuth2 scope (Discord 50001)",
+					"guild_id", b.cfg.GuildID,
+					"app_id", appID,
+					"cause", "The bot was invited without the 'applications.commands' OAuth2 scope, or DISCORD_GUILD_ID is incorrect",
+					"action_required", fmt.Sprintf(
+						"Re-authorize the bot using this URL: https://discord.com/oauth2/authorize?client_id=%s&scope=bot%%20applications.commands&permissions=8",
+						appID,
+					),
+				)
+			} else {
+				b.logger.Error("failed to register slash commands with guild",
+					"guild_id", b.cfg.GuildID,
+					"app_id", appID,
+					"error", err,
+				)
+			}
+		} else {
+			b.logger.Info("slash commands synchronized with guild", "count", len(b.registeredCmds), "guild_id", b.cfg.GuildID)
+		}
+	}
 
 	// Warm-load the resource cache with server roles and channels
 	if b.cache != nil {
@@ -133,6 +159,26 @@ func (b *Bot) Start() error {
 	}
 
 	return nil
+}
+
+// resolveAppID safely extracts the application/user ID from local session state
+// or falls back to querying the Discord REST API (/users/@me) if the gateway Ready packet
+// has not yet been processed.
+func (b *Bot) resolveAppID() (string, error) {
+	if b.session.State != nil && b.session.State.User != nil && b.session.State.User.ID != "" {
+		return b.session.State.User.ID, nil
+	}
+
+	u, err := b.session.User("@me")
+	if err != nil {
+		return "", err
+	}
+
+	if b.session.State != nil && b.session.State.User == nil {
+		b.session.State.User = u
+	}
+
+	return u.ID, nil
 }
 
 // Stop cleanly closes the Discord WebSocket session during container shutdown.

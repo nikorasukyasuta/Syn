@@ -77,3 +77,40 @@ func TestNewBot_Success(t *testing.T) {
 	bot.handleInteraction(bot.session, unhandledInteraction)
 }
 
+func TestBot_ResolveAppID(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		DiscordToken:     "mock_token",
+		GuildID:          "guild_123",
+		VerifiedRoleID:   "role_verified_123",
+		UnverifiedRoleID: "role_unverified_123",
+		StaffRoleIDs:     []string{"role_staff_1"},
+	}
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to create bot: %v", err)
+	}
+
+	// 1. When session.State.User is populated
+	bot.session.State.User = &discordgo.User{ID: "app_id_999", Username: "TestBot"}
+	appID, err := bot.resolveAppID()
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if appID != "app_id_999" {
+		t.Fatalf("expected app_id_999, got: %s", appID)
+	}
+
+	// 2. When session.State is nil
+	bot.session.State = nil
+	// Calling resolveAppID will attempt session.User("@me") which will fail with mock_token,
+	// verifying that it does not panic with nil pointer dereference!
+	_, err = bot.resolveAppID()
+	if err == nil {
+		t.Fatal("expected error with mock token, got nil")
+	}
+}
+
+
