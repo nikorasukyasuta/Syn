@@ -39,6 +39,7 @@ func DefaultConfig() Config {
 func Setup(cfg Config) (*slog.Logger, io.Closer, error) {
 	var writers []io.Writer
 	var closer io.Closer
+	var fileInitErr error
 
 	if cfg.EnableStdout {
 		writers = append(writers, os.Stdout)
@@ -52,10 +53,14 @@ func Setup(cfg Config) (*slog.Logger, io.Closer, error) {
 			MaxAgeDays: cfg.MaxAgeDays,
 		})
 		if err != nil {
-			return nil, nil, fmt.Errorf("initializing rotating file logger: %w", err)
+			if !cfg.EnableStdout {
+				return nil, nil, fmt.Errorf("initializing rotating file logger: %w", err)
+			}
+			fileInitErr = err
+		} else {
+			writers = append(writers, rotator)
+			closer = rotator
 		}
-		writers = append(writers, rotator)
-		closer = rotator
 	}
 
 	if len(writers) == 0 {
@@ -78,6 +83,14 @@ func Setup(cfg Config) (*slog.Logger, io.Closer, error) {
 
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
+
+	if fileInitErr != nil {
+		logger.Warn("file logger failed to initialize, continuing with console logging",
+			"error", fileInitErr,
+			"file_path", cfg.FilePath,
+			"hint", "ensure host logs directory is writable by UID 65532 (run: chmod 777 logs)",
+		)
+	}
 
 	return logger, closer, nil
 }

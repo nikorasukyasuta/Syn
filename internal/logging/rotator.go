@@ -53,7 +53,7 @@ func NewRotatingFileWriter(cfg RotatorConfig) (*RotatingFileWriter, error) {
 	}
 
 	dir := filepath.Dir(cfg.Filename)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0777); err != nil {
 		return nil, fmt.Errorf("creating log directory %q: %w", dir, err)
 	}
 
@@ -116,7 +116,7 @@ func (w *RotatingFileWriter) openExistingOrNew() error {
 	info, err := os.Stat(w.filename)
 	if err != nil {
 		if os.IsNotExist(err) {
-			f, err := os.OpenFile(w.filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+			f, err := os.OpenFile(w.filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 			if err != nil {
 				return fmt.Errorf("creating log file: %w", err)
 			}
@@ -127,7 +127,7 @@ func (w *RotatingFileWriter) openExistingOrNew() error {
 		return fmt.Errorf("stat log file: %w", err)
 	}
 
-	f, err := os.OpenFile(w.filename, os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(w.filename, os.O_APPEND|os.O_WRONLY, 0666)
 	if err != nil {
 		return fmt.Errorf("opening existing log file: %w", err)
 	}
@@ -152,7 +152,7 @@ func (w *RotatingFileWriter) rotate() error {
 		return fmt.Errorf("renaming log file to %s: %w", backupName, err)
 	}
 
-	f, err := os.OpenFile(w.filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	f, err := os.OpenFile(w.filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	if err != nil {
 		return fmt.Errorf("opening new log file after rotation: %w", err)
 	}
