@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"syn/internal/domain"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"syn/internal/domain"
 )
 
 // VerificationRepo implements domain.VerificationRepository using pgxpool.
