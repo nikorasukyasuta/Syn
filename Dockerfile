@@ -12,8 +12,12 @@ RUN go mod download && go mod verify
 
 COPY . .
 
-# Compile a statically linked binary with debug symbols stripped (-s -w)
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+# Target platform arguments (automatically supplied by Docker BuildKit)
+ARG TARGETOS
+ARG TARGETARCH
+
+# Compile a statically linked binary matching the target/host architecture
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-} go build \
     -ldflags="-w -s" \
     -o /build/syn ./cmd/bot/main.go
 
