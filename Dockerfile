@@ -1,0 +1,34 @@
+# Stage 1: Build the Go binary
+FROM golang:1.25-alpine AS builder
+
+# Install git and SSL root certificates
+RUN apk update && apk add --no-cache git ca-certificates tzdata
+
+WORKDIR /build
+
+# Cache dependencies before copying source code
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+
+COPY . .
+
+# Compile a statically linked binary with debug symbols stripped (-s -w)
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-w -s" \
+    -o /build/syn ./cmd/bot/main.go
+
+# Stage 2: Enterprise Distroless Runtime (Non-Root)
+FROM gcr.io/distroless/static-debian12:nonroot
+
+WORKDIR /app
+
+# Copy timezone data from builder stage
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+
+# Copy the compiled binary from the builder stage
+COPY --from=builder /build/syn /app/syn
+
+# Run as unprivileged nonroot user (UID 65532)
+USER nonroot:nonroot
+
+ENTRYPOINT ["/app/syn"]

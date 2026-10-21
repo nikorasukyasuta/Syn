@@ -1,0 +1,54 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: syn_app
+    restart: unless-stopped
+    read_only: true                # Prevents attackers from writing files to the container filesystem
+    security_opt:
+      - no-new-privileges:true     # Blocks privilege escalation via setuid/setgid binaries
+    cap_drop:
+      - ALL                        # Drops all Linux kernel capabilities
+    env_file:
+      - .env                       # Or fetch dynamically via AWS IAM Instance Profile + SSM
+    volumes:
+      # Mount local EC2 image files into the container as strictly Read-Only (defaults to ./assets/panels)
+      - ${ASSETS_HOST_DIR:-./assets/panels}:/app/assets/panels:ro
+      # Mount writable logs directory for rotating log files on disk
+      - ${LOGS_HOST_DIR:-./logs}:/app/logs:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - external_net               # Allows outbound WebSocket/HTTPS to Discord API
+      - db_internal_net            # Allows internal connection to Postgres
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: syn_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - db_internal_net            # Isolated network: NO internet access, NO host port mapping
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  external_net:
+    driver: bridge
+  db_internal_net:
+    driver: bridge
+    internal: true                 # Strictly isolates the database from external traffic
+
+volumes:
+  pgdata:

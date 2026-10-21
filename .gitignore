@@ -1,0 +1,51 @@
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Compiled Binaries & Test Artifacts
+syn
+kinkbot
+/bin/
+/dist/
+/build/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Application Logs & Rotating File Output
+*.log
+*.log.*
+logs/*.log
+logs/*.log.*
+!logs/README.md
+!logs/.gitkeep
+
+# Assets & Media Storage (Exclude runtime uploads, preserve directory structure)
+assets/panels/*
+!assets/panels/README.md
+!assets/panels/.gitkeep
+
+# Database Storage & Local Mounts
+pgdata/
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE & Editor Artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
