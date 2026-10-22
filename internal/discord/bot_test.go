@@ -75,6 +75,31 @@ func TestNewBot_Success(t *testing.T) {
 		},
 	}
 	bot.handleInteraction(bot.session, unhandledInteraction)
+
+	// Test nil interaction
+	bot.handleInteraction(bot.session, nil)
+	bot.handleInteraction(bot.session, &discordgo.InteractionCreate{})
+
+	// Test Component interaction logging
+	bot.handleInteraction(bot.session, &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			Type: discordgo.InteractionMessageComponent,
+			Data: discordgo.MessageComponentInteractionData{
+				CustomID:      "test_button",
+				ComponentType: discordgo.ButtonComponent,
+			},
+		},
+	})
+
+	// Test Modal Submit interaction logging
+	bot.handleInteraction(bot.session, &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			Type: discordgo.InteractionModalSubmit,
+			Data: discordgo.ModalSubmitInteractionData{
+				CustomID: "test_modal",
+			},
+		},
+	})
 }
 
 func TestBot_ResolveAppID(t *testing.T) {

@@ -83,14 +83,15 @@ func (h *ReactionRoleHandler) handleAddRole(
 		requiresVerified = vOpt.BoolValue()
 	}
 
-	// Verify the target message exists and was authored by the bot before modifying it
-	targetMsg, err := s.ChannelMessage(i.ChannelID, messageID)
-	if err != nil || len(targetMsg.Embeds) == 0 {
-		respondEphemeral(s, i, "❌ Could not find a valid bot panel embed with that `message_id` in this channel.")
-		return
+	var explicitChannelID string
+	if cOpt, ok := optMap["channel"]; ok && cOpt.ChannelValue(s) != nil {
+		explicitChannelID = cOpt.ChannelValue(s).ID
 	}
-	if s.State != nil && s.State.User != nil && targetMsg.Author != nil && targetMsg.Author.ID != s.State.User.ID {
-		respondEphemeral(s, i, "❌ That message was not created by this bot.")
+
+	// Locate target channel and message (supporting cross-channel execution)
+	channelID, targetMsg, err := h.resolveMessageChannel(ctx, s, i.GuildID, i.ChannelID, messageID, explicitChannelID)
+	if err != nil || targetMsg == nil || len(targetMsg.Embeds) == 0 {
+		respondEphemeral(s, i, fmt.Sprintf("❌ Could not find a valid bot panel embed with `message_id` `%s`. (If the panel is in a private/restricted channel, pass the `channel` parameter or check bot permissions).", messageID))
 		return
 	}
 	if s.State != nil && s.State.User != nil && targetMsg.Author != nil && targetMsg.Author.ID != s.State.User.ID {
@@ -102,7 +103,7 @@ func (h *ReactionRoleHandler) handleAddRole(
 
 	rr := &domain.ReactionRole{
 		GuildID:          i.GuildID,
-		ChannelID:        i.ChannelID,
+		ChannelID:        channelID,
 		MessageID:        messageID,
 		EmojiAPIName:     emojiAPIName,
 		EmojiDisplay:     rawEmoji,
@@ -118,20 +119,30 @@ func (h *ReactionRoleHandler) handleAddRole(
 	}
 
 	// 2. Have the bot react to the panel post with the emoji first (validates the emoji exists)
-	if err := s.MessageReactionAdd(i.ChannelID, messageID, emojiAPIName); err != nil {
+	if err := s.MessageReactionAdd(channelID, messageID, emojiAPIName); err != nil {
 		// Rollback database mapping if the emoji was invalid or bot lacks permission
 		_ = h.svc.RemoveBinding(ctx, i.Member.User.ID, i.Member.Roles, i.GuildID, messageID, emojiAPIName)
-		respondEphemeral(s, i, fmt.Sprintf("❌ Failed to add reaction `%s` to the message. Make sure the emoji is valid and from a server the bot is in.", rawEmoji))
+		respondEphemeral(s, i, fmt.Sprintf("❌ Failed to add reaction `%s` to panel in <#%s>: %v. Ensure the bot has 'Add Reactions' permission in that channel.", rawEmoji, channelID, err))
 		return
 	}
 
 	// 3. Rebuild the Embed post with all linked roles from PostgreSQL
-	if err := h.refreshPanelEmbed(ctx, s, i.GuildID, i.ChannelID, targetMsg); err != nil {
+	if err := h.refreshPanelEmbed(ctx, s, i.GuildID, channelID, targetMsg); err != nil {
 		respondEphemeral(s, i, fmt.Sprintf("⚠️ Role linked and reaction added, but failed to update embed text: %v", err))
 		return
 	}
 
-	respondEphemeral(s, i, fmt.Sprintf("✅ Added %s → <@&%s> to panel `%s` (`18+ Required: %t`).", rawEmoji, roleID, messageID, requiresVerified))
+	msgText := fmt.Sprintf("✅ Added %s → <@&%s> to panel `%s` in <#%s> (`18+ Required: %t`).", rawEmoji, roleID, messageID, channelID, requiresVerified)
+
+	// Check channel permissions and role hierarchy for proactive warnings
+	if missing := h.checkChannelPermissions(s, channelID); len(missing) > 0 {
+		msgText += fmt.Sprintf("\n\n⚠️ **Channel Permission Warning**: Bot is missing permission(s) in <#%s>: `%s`. Discord will not deliver member reaction events to the bot until granted.", channelID, strings.Join(missing, ", "))
+	}
+	if okHierarchy, hierarchyWarn := h.checkRoleHierarchy(s, i.GuildID, roleID); !okHierarchy {
+		msgText += "\n\n" + hierarchyWarn
+	}
+
+	respondEphemeral(s, i, msgText)
 }
 
 // handleRemoveRole unlinks an emoji from the panel, removes the reaction, and refreshes the Embed post.
@@ -148,9 +159,14 @@ func (h *ReactionRoleHandler) handleRemoveRole(
 	rawEmoji := strings.TrimSpace(optMap["emoji"].StringValue())
 	emojiAPIName := NormalizeEmojiInput(rawEmoji)
 
-	targetMsg, err := s.ChannelMessage(i.ChannelID, messageID)
-	if err != nil || len(targetMsg.Embeds) == 0 {
-		respondEphemeral(s, i, "❌ Could not find a valid bot panel embed with that `message_id` in this channel.")
+	var explicitChannelID string
+	if cOpt, ok := optMap["channel"]; ok && cOpt.ChannelValue(s) != nil {
+		explicitChannelID = cOpt.ChannelValue(s).ID
+	}
+
+	channelID, targetMsg, err := h.resolveMessageChannel(ctx, s, i.GuildID, i.ChannelID, messageID, explicitChannelID)
+	if err != nil || targetMsg == nil || len(targetMsg.Embeds) == 0 {
+		respondEphemeral(s, i, fmt.Sprintf("❌ Could not find a valid bot panel embed with `message_id` `%s`.", messageID))
 		return
 	}
 	if s.State != nil && s.State.User != nil && targetMsg.Author != nil && targetMsg.Author.ID != s.State.User.ID {
@@ -164,14 +180,14 @@ func (h *ReactionRoleHandler) handleRemoveRole(
 	}
 
 	// Remove all instances of that emoji reaction from the message
-	_ = s.MessageReactionsRemoveEmoji(i.ChannelID, messageID, emojiAPIName)
+	_ = s.MessageReactionsRemoveEmoji(channelID, messageID, emojiAPIName)
 
-	if err := h.refreshPanelEmbed(ctx, s, i.GuildID, i.ChannelID, targetMsg); err != nil {
+	if err := h.refreshPanelEmbed(ctx, s, i.GuildID, channelID, targetMsg); err != nil {
 		respondEphemeral(s, i, fmt.Sprintf("⚠️ Binding removed, but failed to refresh panel embed: %v", err))
 		return
 	}
 
-	respondEphemeral(s, i, fmt.Sprintf("✅ Unlinked %s and updated panel `%s`.", rawEmoji, messageID))
+	respondEphemeral(s, i, fmt.Sprintf("✅ Unlinked %s and updated panel `%s` in <#%s>.", rawEmoji, messageID, channelID))
 }
 
 // refreshPanelEmbed queries PostgreSQL for all roles attached to the panel and edits the Discord message.
@@ -228,29 +244,94 @@ func (h *ReactionRoleHandler) HandleReactionAdd(s *discordgo.Session, r *discord
 		return
 	}
 
+	emojiKey := r.Emoji.APIName()
+	h.logger.Info("reaction role: reaction added event received",
+		"guild_id", r.GuildID,
+		"channel_id", r.ChannelID,
+		"message_id", r.MessageID,
+		"user_id", r.UserID,
+		"emoji", emojiKey,
+	)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	emojiKey := r.Emoji.APIName()
 	roleID, err := h.svc.ResolveReactionForAdd(ctx, r.GuildID, r.MessageID, emojiKey, r.UserID)
 	if err != nil {
 		if errors.Is(err, domain.ErrReactionNotFound) {
+			h.logger.Debug("reaction role: no mapping found for reaction",
+				"guild_id", r.GuildID,
+				"channel_id", r.ChannelID,
+				"message_id", r.MessageID,
+				"emoji", emojiKey,
+				"user_id", r.UserID,
+			)
 			return
 		}
 		if errors.Is(err, domain.ErrUnverifiedForRole) {
+			h.logger.Warn("reaction role: user blocked because role requires 18+ verification",
+				"guild_id", r.GuildID,
+				"channel_id", r.ChannelID,
+				"message_id", r.MessageID,
+				"emoji", emojiKey,
+				"user_id", r.UserID,
+			)
 			// Automatically strip the reaction if an unverified user tries to claim an 18+ role
 			_ = s.MessageReactionRemove(r.ChannelID, r.MessageID, emojiKey, r.UserID)
 			return
 		}
-		h.logger.Error("error resolving reaction add", "error", err, "user_id", r.UserID)
+		if errors.Is(err, domain.ErrProtectedRole) {
+			h.logger.Warn("reaction role: blocked assignment of protected role",
+				"guild_id", r.GuildID,
+				"channel_id", r.ChannelID,
+				"message_id", r.MessageID,
+				"emoji", emojiKey,
+				"user_id", r.UserID,
+			)
+			_ = s.MessageReactionRemove(r.ChannelID, r.MessageID, emojiKey, r.UserID)
+			return
+		}
+		h.logger.Error("reaction role: error resolving reaction add",
+			"error", err,
+			"guild_id", r.GuildID,
+			"channel_id", r.ChannelID,
+			"message_id", r.MessageID,
+			"emoji", emojiKey,
+			"user_id", r.UserID,
+		)
 		return
 	}
 
 	if err := s.GuildMemberRoleAdd(r.GuildID, r.UserID, roleID); err != nil {
-		h.logger.Error("failed to grant reaction role in discord",
-			"error", err, "guild_id", r.GuildID, "user_id", r.UserID, "role_id", roleID,
-		)
+		var restErr *discordgo.RESTError
+		if errors.As(err, &restErr) && restErr.Message != nil && restErr.Message.Code == 50013 {
+			h.logger.Error("reaction role: failed to grant role due to Discord Role Hierarchy (50013 Missing Permissions). Bot role must be higher than target role in Server Settings -> Roles",
+				"error", err,
+				"guild_id", r.GuildID,
+				"channel_id", r.ChannelID,
+				"user_id", r.UserID,
+				"role_id", roleID,
+			)
+		} else {
+			h.logger.Error("reaction role: failed to grant reaction role in discord",
+				"error", err,
+				"guild_id", r.GuildID,
+				"channel_id", r.ChannelID,
+				"user_id", r.UserID,
+				"role_id", roleID,
+			)
+		}
+		return
 	}
+
+	h.logger.Info("reaction role: granted role to member successfully",
+		"guild_id", r.GuildID,
+		"channel_id", r.ChannelID,
+		"message_id", r.MessageID,
+		"role_id", roleID,
+		"user_id", r.UserID,
+		"emoji", emojiKey,
+	)
 }
 
 // HandleReactionRemove revokes the mapped role when a user removes their reaction.
@@ -259,23 +340,176 @@ func (h *ReactionRoleHandler) HandleReactionRemove(s *discordgo.Session, r *disc
 		return
 	}
 
+	emojiKey := r.Emoji.APIName()
+	h.logger.Info("reaction role: reaction removed event received",
+		"guild_id", r.GuildID,
+		"channel_id", r.ChannelID,
+		"message_id", r.MessageID,
+		"user_id", r.UserID,
+		"emoji", emojiKey,
+	)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	emojiKey := r.Emoji.APIName()
 	roleID, err := h.svc.ResolveReactionForRemove(ctx, r.GuildID, r.MessageID, emojiKey)
 	if err != nil {
-		if !errors.Is(err, domain.ErrReactionNotFound) {
-			h.logger.Error("error resolving reaction remove", "error", err, "user_id", r.UserID)
+		if errors.Is(err, domain.ErrReactionNotFound) {
+			h.logger.Debug("reaction role: no mapping found for reaction remove",
+				"guild_id", r.GuildID,
+				"channel_id", r.ChannelID,
+				"message_id", r.MessageID,
+				"emoji", emojiKey,
+				"user_id", r.UserID,
+			)
+			return
 		}
+		h.logger.Error("reaction role: error resolving reaction remove",
+			"error", err,
+			"guild_id", r.GuildID,
+			"channel_id", r.ChannelID,
+			"message_id", r.MessageID,
+			"emoji", emojiKey,
+			"user_id", r.UserID,
+		)
 		return
 	}
 
 	if err := s.GuildMemberRoleRemove(r.GuildID, r.UserID, roleID); err != nil {
-		h.logger.Error("failed to remove reaction role in discord",
-			"error", err, "guild_id", r.GuildID, "user_id", r.UserID, "role_id", roleID,
+		h.logger.Error("reaction role: failed to remove reaction role in discord",
+			"error", err,
+			"guild_id", r.GuildID,
+			"channel_id", r.ChannelID,
+			"user_id", r.UserID,
+			"role_id", roleID,
 		)
+		return
 	}
+
+	h.logger.Info("reaction role: revoked role from member successfully",
+		"guild_id", r.GuildID,
+		"channel_id", r.ChannelID,
+		"message_id", r.MessageID,
+		"role_id", roleID,
+		"user_id", r.UserID,
+		"emoji", emojiKey,
+	)
+}
+
+// resolveMessageChannel locates which channel a message belongs to.
+func (h *ReactionRoleHandler) resolveMessageChannel(
+	ctx context.Context,
+	s *discordgo.Session,
+	guildID, currentChannelID, messageID, explicitChannelID string,
+) (string, *discordgo.Message, error) {
+	// 1. If explicit channel was specified by user
+	if explicitChannelID != "" {
+		if msg, err := s.ChannelMessage(explicitChannelID, messageID); err == nil && msg != nil {
+			return explicitChannelID, msg, nil
+		}
+	}
+
+	// 2. Query saved panel metadata from PostgreSQL
+	if h.svc != nil {
+		if panel, err := h.svc.GetPanelMetadata(ctx, guildID, messageID); err == nil && panel != nil && panel.ChannelID != "" {
+			if msg, err := s.ChannelMessage(panel.ChannelID, messageID); err == nil && msg != nil {
+				return panel.ChannelID, msg, nil
+			}
+		}
+	}
+
+	// 3. Try the current channel where command was executed
+	if currentChannelID != "" {
+		if msg, err := s.ChannelMessage(currentChannelID, messageID); err == nil && msg != nil {
+			return currentChannelID, msg, nil
+		}
+	}
+
+	// 4. Fallback search across all text channels in the guild
+	if guildID != "" {
+		channels, err := s.GuildChannels(guildID)
+		if err == nil {
+			for _, ch := range channels {
+				if ch.Type == discordgo.ChannelTypeGuildText || ch.Type == discordgo.ChannelTypeGuildNews {
+					if ch.ID == currentChannelID || ch.ID == explicitChannelID {
+						continue
+					}
+					if msg, err := s.ChannelMessage(ch.ID, messageID); err == nil && msg != nil {
+						return ch.ID, msg, nil
+					}
+				}
+			}
+		}
+	}
+
+	return "", nil, fmt.Errorf("message %s not found in any accessible channel", messageID)
+}
+
+// checkChannelPermissions verifies the bot has the necessary permissions in a channel.
+func (h *ReactionRoleHandler) checkChannelPermissions(s *discordgo.Session, channelID string) []string {
+	if s.State == nil || s.State.User == nil || channelID == "" {
+		return nil
+	}
+	perms, err := s.UserChannelPermissions(s.State.User.ID, channelID)
+	if err != nil {
+		return nil
+	}
+	var missing []string
+	if perms&discordgo.PermissionViewChannel == 0 {
+		missing = append(missing, "View Channel")
+	}
+	if perms&discordgo.PermissionReadMessageHistory == 0 {
+		missing = append(missing, "Read Message History")
+	}
+	if perms&discordgo.PermissionAddReactions == 0 {
+		missing = append(missing, "Add Reactions")
+	}
+	return missing
+}
+
+// checkRoleHierarchy checks if the target role is below the bot's highest role in Discord's hierarchy.
+func (h *ReactionRoleHandler) checkRoleHierarchy(s *discordgo.Session, guildID, roleID string) (bool, string) {
+	if s.State == nil || s.State.User == nil || guildID == "" || roleID == "" {
+		return true, ""
+	}
+	roles, err := s.GuildRoles(guildID)
+	if err != nil {
+		return true, ""
+	}
+
+	var targetRole *discordgo.Role
+	for _, r := range roles {
+		if r.ID == roleID {
+			targetRole = r
+			break
+		}
+	}
+	if targetRole == nil {
+		return true, ""
+	}
+
+	botMember, err := s.GuildMember(guildID, s.State.User.ID)
+	if err != nil {
+		return true, ""
+	}
+
+	rolePosMap := make(map[string]int, len(roles))
+	for _, r := range roles {
+		rolePosMap[r.ID] = r.Position
+	}
+
+	botHighestPos := 0
+	for _, rid := range botMember.Roles {
+		if pos, ok := rolePosMap[rid]; ok && pos > botHighestPos {
+			botHighestPos = pos
+		}
+	}
+
+	if targetRole.Position >= botHighestPos {
+		return false, fmt.Sprintf("⚠️ **Role Hierarchy Warning**: The role `@%s` (position %d) is higher than or equal to the bot's highest role (position %d). Discord will reject role assignment with 403 Forbidden (Error 50013). In Server Settings → Roles, drag the bot's role ABOVE this role.", targetRole.Name, targetRole.Position, botHighestPos)
+	}
+
+	return true, ""
 }
 
 func optionsToMap(opts []*discordgo.ApplicationCommandInteractionDataOption) map[string]*discordgo.ApplicationCommandInteractionDataOption {
@@ -329,6 +563,16 @@ func ReactionRoleCommandDefinition() *discordgo.ApplicationCommand {
 						Required:    true,
 					},
 					{
+						Type:        discordgo.ApplicationCommandOptionChannel,
+						Name:        "channel",
+						Description: "Target channel to post this panel in (defaults to current channel)",
+						Required:    false,
+						ChannelTypes: []discordgo.ChannelType{
+							discordgo.ChannelTypeGuildText,
+							discordgo.ChannelTypeGuildNews,
+						},
+					},
+					{
 						Type:         discordgo.ApplicationCommandOptionString,
 						Name:         "banner_file",
 						Description:  "Filename of the bottom banner photo on EC2 (e.g., dynamic_banner.png)",
@@ -360,6 +604,16 @@ func ReactionRoleCommandDefinition() *discordgo.ApplicationCommand {
 						Name:        "message_id",
 						Description: "The Message ID of the panel post to update",
 						Required:    true,
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionChannel,
+						Name:        "channel",
+						Description: "Channel where the panel is located (optional, auto-detected if omitted)",
+						Required:    false,
+						ChannelTypes: []discordgo.ChannelType{
+							discordgo.ChannelTypeGuildText,
+							discordgo.ChannelTypeGuildNews,
+						},
 					},
 					{
 						Type:         discordgo.ApplicationCommandOptionString,
@@ -407,6 +661,16 @@ func ReactionRoleCommandDefinition() *discordgo.ApplicationCommand {
 						Required:    true,
 					},
 					{
+						Type:        discordgo.ApplicationCommandOptionChannel,
+						Name:        "channel",
+						Description: "Channel where the panel is located (optional, auto-detected if omitted)",
+						Required:    false,
+						ChannelTypes: []discordgo.ChannelType{
+							discordgo.ChannelTypeGuildText,
+							discordgo.ChannelTypeGuildNews,
+						},
+					},
+					{
 						Type:        discordgo.ApplicationCommandOptionString,
 						Name:        "label",
 						Description: "Short description next to the role on the post (e.g. 'Shibari / Rope')",
@@ -436,6 +700,16 @@ func ReactionRoleCommandDefinition() *discordgo.ApplicationCommand {
 						Name:        "emoji",
 						Description: "The emoji to unlink",
 						Required:    true,
+					},
+					{
+						Type:        discordgo.ApplicationCommandOptionChannel,
+						Name:        "channel",
+						Description: "Channel where the panel is located (optional, auto-detected if omitted)",
+						Required:    false,
+						ChannelTypes: []discordgo.ChannelType{
+							discordgo.ChannelTypeGuildText,
+							discordgo.ChannelTypeGuildNews,
+						},
 					},
 				},
 			},
@@ -505,6 +779,17 @@ func (h *ReactionRoleHandler) handleCreatePanel(
 	title := strings.TrimSpace(optMap["title"].StringValue())
 	intro := strings.TrimSpace(optMap["intro"].StringValue())
 
+	targetChannelID := i.ChannelID
+	if chOpt, ok := optMap["channel"]; ok && chOpt.ChannelValue(s) != nil {
+		targetChannelID = chOpt.ChannelValue(s).ID
+	}
+
+	// Verify bot permissions in the target channel
+	if missing := h.checkChannelPermissions(s, targetChannelID); len(missing) > 0 {
+		respondEphemeral(s, i, fmt.Sprintf("❌ Bot is missing required permission(s) in <#%s>: `%s`. Please update Discord channel permissions before posting the panel.", targetChannelID, strings.Join(missing, ", ")))
+		return
+	}
+
 	var bannerFile, thumbFile string
 	if bOpt, ok := optMap["banner_file"]; ok {
 		bannerFile = strings.TrimSpace(bOpt.StringValue())
@@ -529,7 +814,7 @@ func (h *ReactionRoleHandler) handleCreatePanel(
 
 	panel := &domain.ReactionPanel{
 		GuildID:       i.GuildID,
-		ChannelID:     i.ChannelID,
+		ChannelID:     targetChannelID,
 		Title:         title,
 		Intro:         intro,
 		ColorHex:      colorVal,
@@ -541,26 +826,26 @@ func (h *ReactionRoleHandler) handleCreatePanel(
 	files := buildDiscordFiles(bannerAsset, thumbAsset)
 
 	// 2. Send the Embed + Multipart EC2 Image Files to Discord
-	msg, err := s.ChannelMessageSendComplex(i.ChannelID, &discordgo.MessageSend{
+	msg, err := s.ChannelMessageSendComplex(targetChannelID, &discordgo.MessageSend{
 		Embeds: []*discordgo.MessageEmbed{embed},
 		Files:  files,
 	})
 	if err != nil {
-		respondEphemeral(s, i, fmt.Sprintf("❌ Failed to post panel with EC2 images: %v", err))
+		respondEphemeral(s, i, fmt.Sprintf("❌ Failed to post panel to <#%s>: %v", targetChannelID, err))
 		return
 	}
 
 	// 3. Persist the panel metadata to PostgreSQL
 	panel.MessageID = msg.ID
 	if err := h.svc.SavePanelMetadata(ctx, i.Member.User.ID, i.Member.Roles, panel); err != nil {
-		_ = s.ChannelMessageDelete(i.ChannelID, msg.ID)
+		_ = s.ChannelMessageDelete(targetChannelID, msg.ID)
 		respondEphemeral(s, i, fmt.Sprintf("❌ Failed to save panel metadata: %v", err))
 		return
 	}
 
 	respondEphemeral(s, i, fmt.Sprintf(
-		"✅ **Reaction Role Panel Created with EC2 Photos!**\n• **Message ID:** `%s`\n• Next step: Run `/reaction-panel add-role message_id:%s` to link emojis and roles.",
-		msg.ID, msg.ID,
+		"✅ **Reaction Role Panel Created in <#%s> with EC2 Photos!**\n• **Message ID:** `%s`\n• Next step: Run `/reaction-panel add-role message_id:%s` to link emojis and roles.",
+		targetChannelID, msg.ID, msg.ID,
 	))
 }
 
@@ -594,6 +879,17 @@ func (h *ReactionRoleHandler) handleSetImage(
 		return
 	}
 
+	var explicitChannelID string
+	if cOpt, ok := optMap["channel"]; ok && cOpt.ChannelValue(s) != nil {
+		explicitChannelID = cOpt.ChannelValue(s).ID
+	}
+
+	channelID, _, err := h.resolveMessageChannel(ctx, s, i.GuildID, i.ChannelID, messageID, explicitChannelID)
+	if err != nil {
+		respondEphemeral(s, i, fmt.Sprintf("❌ Could not find message `%s` in any accessible channel.", messageID))
+		return
+	}
+
 	panel, bannerAsset, thumbAsset, err := h.svc.UpdatePanelImages(
 		ctx, i.Member.User.ID, i.Member.Roles,
 		i.GuildID, messageID, bannerFile, thumbFile, clearImages,
@@ -615,17 +911,17 @@ func (h *ReactionRoleHandler) handleSetImage(
 
 	_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
 		ID:          messageID,
-		Channel:     i.ChannelID,
+		Channel:     channelID,
 		Embeds:      &[]*discordgo.MessageEmbed{embed},
 		Files:       files,
 		Attachments: &emptyAttachments,
 	})
 	if err != nil {
-		respondEphemeral(s, i, fmt.Sprintf("⚠️ Database updated, but Discord message edit failed: %v", err))
+		respondEphemeral(s, i, fmt.Sprintf("⚠️ Database updated, but Discord message edit failed in <#%s>: %v", channelID, err))
 		return
 	}
 
-	respondEphemeral(s, i, fmt.Sprintf("✅ Updated EC2 photos on panel `%s`!", messageID))
+	respondEphemeral(s, i, fmt.Sprintf("✅ Updated EC2 photos on panel `%s` in <#%s>!", messageID, channelID))
 }
 
 // buildPanelEmbed binds local EC2 filenames via Discord's "attachment://<filename>" URI scheme.

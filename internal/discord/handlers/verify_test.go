@@ -167,3 +167,88 @@ func TestVerifyHandler_HandleVerifyCommand_ServiceError(t *testing.T) {
 	h.HandleVerifyCommand(session, interaction)
 }
 
+func TestVerifyHandler_HandleVerifyCommand_ReplacesUnverifiedRole(t *testing.T) {
+	t.Parallel()
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	vRepo := &mockVerificationRepo{}
+	vSvc := service.NewVerificationService(vRepo, []string{"role_staff"}, silentLogger)
+	h := handlers.NewVerifyHandler(vSvc, "role_verified", "role_unverified", silentLogger)
+
+	session := newMockSession(http.StatusOK, `{}`)
+	// Member has role_unverified in i.Member.Roles
+	interaction := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			ID:      "int_4",
+			Token:   "tok_4",
+			Type:    discordgo.InteractionApplicationCommand,
+			GuildID: "guild_1",
+			Member: &discordgo.Member{
+				User:  &discordgo.User{ID: "target_user_1"},
+				Roles: []string{"role_staff", "role_unverified"},
+			},
+			Data: discordgo.ApplicationCommandInteractionData{
+				Options: []*discordgo.ApplicationCommandInteractionDataOption{
+					{
+						Name:  "member",
+						Type:  discordgo.ApplicationCommandOptionUser,
+						Value: "target_user_1",
+					},
+				},
+				Resolved: &discordgo.ApplicationCommandInteractionDataResolved{
+					Users: map[string]*discordgo.User{
+						"target_user_1": {ID: "target_user_1"},
+					},
+				},
+			},
+		},
+	}
+
+	h.HandleVerifyCommand(session, interaction)
+}
+
+func TestVerifyHandler_HandleVerifyCommand_AlreadyVerifiedSyncsRoles(t *testing.T) {
+	t.Parallel()
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	vRepo := &mockVerificationRepo{
+		existing: &domain.Verification{
+			DiscordUserID: "target_user_2",
+			GuildID:       "guild_1",
+			IsVerified:    true,
+		},
+	}
+	vSvc := service.NewVerificationService(vRepo, []string{"role_staff"}, silentLogger)
+	h := handlers.NewVerifyHandler(vSvc, "role_verified", "role_unverified", silentLogger)
+
+	session := newMockSession(http.StatusOK, `{}`)
+	interaction := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			ID:      "int_5",
+			Token:   "tok_5",
+			Type:    discordgo.InteractionApplicationCommand,
+			GuildID: "guild_1",
+			Member: &discordgo.Member{
+				User:  &discordgo.User{ID: "staff_1"},
+				Roles: []string{"role_staff"},
+			},
+			Data: discordgo.ApplicationCommandInteractionData{
+				Options: []*discordgo.ApplicationCommandInteractionDataOption{
+					{
+						Name:  "member",
+						Type:  discordgo.ApplicationCommandOptionUser,
+						Value: "target_user_2",
+					},
+				},
+				Resolved: &discordgo.ApplicationCommandInteractionDataResolved{
+					Users: map[string]*discordgo.User{
+						"target_user_2": {ID: "target_user_2"},
+					},
+				},
+			},
+		},
+	}
+
+	h.HandleVerifyCommand(session, interaction)
+}
+

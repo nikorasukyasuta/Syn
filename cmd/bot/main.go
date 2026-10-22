@@ -71,7 +71,7 @@ func main() {
 	// 4. Wire Clean Architecture Layers (Repository -> Service -> Handlers/Cache -> Bot)
 	verifyRepo := postgres.NewVerificationRepo(dbPool)
 	verifySvc := service.NewVerificationService(verifyRepo, cfg.StaffRoleIDs, logger)
-	verifyHandler := handlers.NewVerifyHandler(verifySvc, cfg.VerifiedRoleID, cfg.UnverifiedRoleID)
+	verifyHandler := handlers.NewVerifyHandler(verifySvc, cfg.VerifiedRoleID, cfg.UnverifiedRoleID, logger)
 
 	assetStore, err := storage.NewLocalAssetStore(cfg.AssetsDir)
 	if err != nil {

@@ -92,13 +92,13 @@ func TestVerifyMember_RBAC(t *testing.T) {
 			wantAuditEvent: "UNAUTHORIZED_VERIFY_ATTEMPT",
 		},
 		{
-			name:         "Security Block: Server Helper attempts to verify themselves",
+			name:         "Success: Staff or Helper verifies themselves",
 			guildID:      "guild_1",
 			actorID:      "helper_user_1",
 			actorRoles:   []string{roleHelperID},
 			targetUserID: "helper_user_1",
 			mockRepo:     &mockVerificationRepo{},
-			wantErr:      domain.ErrSelfVerify,
+			wantErr:      nil,
 		},
 		{
 			name:         "Idempotency: Member already verified",

@@ -71,3 +71,20 @@ func TestMemberJoinHandler_HandleGuildMemberAdd(t *testing.T) {
 	h.HandleGuildMemberAdd(session, nil)
 }
 
+func TestMemberJoinHandler_SyncUnassignedMembers(t *testing.T) {
+	t.Parallel()
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	session := newMockSession(http.StatusOK, `[]`)
+
+	h := handlers.NewMemberJoinHandler("guild_1", "role_unverified_123", silentLogger)
+	if err := h.SyncUnassignedMembers(session, "role_verified_123"); err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	hEmpty := handlers.NewMemberJoinHandler("", "", silentLogger)
+	if err := hEmpty.SyncUnassignedMembers(session, ""); err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+}
+

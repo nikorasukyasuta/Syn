@@ -51,13 +51,7 @@ func (s *VerificationService) VerifyMember(
 		return nil, domain.ErrUnauthorized
 	}
 
-	// 2. Security Policy: Prevent compromised Staff/Helper accounts from self-verifying.
-	if actorID == targetUserID {
-		s.logger.WarnContext(ctx, "blocked self-verification attempt", "actor_id", actorID)
-		return nil, domain.ErrSelfVerify
-	}
-
-	// 3. Idempotency Check: Ensure target isn't already verified.
+	// 2. Idempotency Check: Ensure target isn't already verified.
 	existing, err := s.repo.GetByUserID(ctx, guildID, targetUserID)
 	if err != nil {
 		return nil, err

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -20,6 +21,7 @@ type Bot struct {
 	routes         map[string]InteractionHandlerFunc
 	registeredCmds []*discordgo.ApplicationCommand
 	rrHandler      *handlers.ReactionRoleHandler
+	memberHandler  *handlers.MemberJoinHandler
 	cache          *cache.ResourceCache
 }
 
@@ -44,12 +46,13 @@ func NewBot(
 		discordgo.IntentsGuildMessageReactions
 
 	b := &Bot{
-		session:   session,
-		cfg:       cfg,
-		logger:    logger,
-		routes:    make(map[string]InteractionHandlerFunc),
-		rrHandler: rrHandler,
-		cache:     resCache,
+		session:       session,
+		cfg:           cfg,
+		logger:        logger,
+		routes:        make(map[string]InteractionHandlerFunc),
+		rrHandler:     rrHandler,
+		memberHandler: memberHandler,
+		cache:         resCache,
 	}
 
 	// 1. Register /verify-member (Staff & Server Helpers Only)
@@ -158,6 +161,15 @@ func (b *Bot) Start() error {
 		}
 	}
 
+	// Sweep server to ensure all unassigned human members receive the unverified role
+	if b.memberHandler != nil && b.cfg.UnverifiedRoleID != "" {
+		go func() {
+			if err := b.memberHandler.SyncUnassignedMembers(b.session, b.cfg.VerifiedRoleID); err != nil {
+				b.logger.Warn("unverified member sync sweep completed with warning", "error", err)
+			}
+		}()
+	}
+
 	return nil
 }
 
@@ -187,18 +199,117 @@ func (b *Bot) Stop() error {
 	return b.session.Close()
 }
 
-// handleInteraction routes incoming ApplicationCommands to their registered handler.
+// handleInteraction routes incoming interactions and logs structured request telemetry.
 func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i == nil || i.Interaction == nil {
+		return
+	}
+
+	start := time.Now()
+	var userID, username string
+	if i.Member != nil && i.Member.User != nil {
+		userID = i.Member.User.ID
+		username = i.Member.User.Username
+	} else if i.User != nil {
+		userID = i.User.ID
+		username = i.User.Username
+	}
+
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
-		cmdName := i.ApplicationCommandData().Name
+		cmdData := i.ApplicationCommandData()
+		cmdName := cmdData.Name
+		subCmd := extractSubcommandName(cmdData.Options)
+
+		b.logger.Info("received slash command interaction",
+			"interaction_id", i.ID,
+			"guild_id", i.GuildID,
+			"channel_id", i.ChannelID,
+			"user_id", userID,
+			"username", username,
+			"command", cmdName,
+			"subcommand", subCmd,
+		)
+
 		if handler, exists := b.routes[cmdName]; exists {
 			handler(s, i)
+		} else {
+			b.logger.Warn("no handler registered for slash command",
+				"command", cmdName,
+				"interaction_id", i.ID,
+			)
 		}
+
+		b.logger.Info("completed slash command interaction",
+			"interaction_id", i.ID,
+			"command", cmdName,
+			"subcommand", subCmd,
+			"user_id", userID,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+
 	case discordgo.InteractionApplicationCommandAutocomplete:
-		if i.ApplicationCommandData().Name == "reaction-panel" {
+		cmdData := i.ApplicationCommandData()
+		cmdName := cmdData.Name
+		subCmd := extractSubcommandName(cmdData.Options)
+
+		b.logger.Info("received autocomplete interaction",
+			"interaction_id", i.ID,
+			"guild_id", i.GuildID,
+			"channel_id", i.ChannelID,
+			"user_id", userID,
+			"username", username,
+			"command", cmdName,
+			"subcommand", subCmd,
+		)
+
+		if cmdName == "reaction-panel" && b.rrHandler != nil {
 			// Guard autocomplete with RBAC so only Staff and Server Helpers can see EC2 filenames
 			RecoverPanic(b.logger, RequireRoles(b.cfg.StaffRoleIDs, b.logger, b.rrHandler.HandleAutocomplete))(s, i)
 		}
+
+		b.logger.Info("completed autocomplete interaction",
+			"interaction_id", i.ID,
+			"command", cmdName,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+
+	case discordgo.InteractionMessageComponent:
+		compData := i.MessageComponentData()
+		b.logger.Info("received component interaction",
+			"interaction_id", i.ID,
+			"guild_id", i.GuildID,
+			"channel_id", i.ChannelID,
+			"user_id", userID,
+			"username", username,
+			"custom_id", compData.CustomID,
+			"component_type", compData.ComponentType,
+		)
+
+	case discordgo.InteractionModalSubmit:
+		modalData := i.ModalSubmitData()
+		b.logger.Info("received modal submit interaction",
+			"interaction_id", i.ID,
+			"guild_id", i.GuildID,
+			"channel_id", i.ChannelID,
+			"user_id", userID,
+			"username", username,
+			"custom_id", modalData.CustomID,
+		)
+
+	default:
+		b.logger.Info("received interaction of type",
+			"interaction_id", i.ID,
+			"type", int(i.Type),
+			"guild_id", i.GuildID,
+			"user_id", userID,
+		)
 	}
+}
+
+func extractSubcommandName(opts []*discordgo.ApplicationCommandInteractionDataOption) string {
+	if len(opts) > 0 && opts[0].Type == discordgo.ApplicationCommandOptionSubCommand {
+		return opts[0].Name
+	}
+	return ""
 }

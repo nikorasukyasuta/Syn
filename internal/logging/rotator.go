@@ -113,11 +113,22 @@ func (w *RotatingFileWriter) Close() error {
 
 // openExistingOrNew opens the primary log file in append mode and records its current size.
 func (w *RotatingFileWriter) openExistingOrNew() error {
+	dir := filepath.Dir(w.filename)
+	_ = os.MkdirAll(dir, 0777)
+
 	info, err := os.Stat(w.filename)
 	if err != nil {
 		if os.IsNotExist(err) {
 			f, err := os.OpenFile(w.filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 			if err != nil {
+				// Attempt to ensure directory write permissions and retry
+				_ = os.Chmod(dir, 0777)
+				f, retryErr := os.OpenFile(w.filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+				if retryErr == nil {
+					w.file = f
+					w.size = 0
+					return nil
+				}
 				return fmt.Errorf("creating log file: %w", err)
 			}
 			w.file = f
@@ -129,6 +140,13 @@ func (w *RotatingFileWriter) openExistingOrNew() error {
 
 	f, err := os.OpenFile(w.filename, os.O_APPEND|os.O_WRONLY, 0666)
 	if err != nil {
+		_ = os.Chmod(w.filename, 0666)
+		f, retryErr := os.OpenFile(w.filename, os.O_APPEND|os.O_WRONLY, 0666)
+		if retryErr == nil {
+			w.file = f
+			w.size = info.Size()
+			return nil
+		}
 		return fmt.Errorf("opening existing log file: %w", err)
 	}
 

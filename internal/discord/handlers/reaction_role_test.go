@@ -262,3 +262,31 @@ func TestReactionRoleHandler_HandlePanelCommand_Routing(t *testing.T) {
 		},
 	})
 }
+
+func TestReactionRoleHandler_CheckChannelPermissions(t *testing.T) {
+	t.Parallel()
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	handler := NewReactionRoleHandler(nil, silentLogger)
+	session := mockSession()
+
+	// When state user is nil, returns nil
+	missing := handler.checkChannelPermissions(session, "ch_1")
+	if missing != nil {
+		t.Errorf("expected nil missing permissions when state user is nil, got %v", missing)
+	}
+}
+
+func TestReactionRoleHandler_CheckRoleHierarchy(t *testing.T) {
+	t.Parallel()
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	handler := NewReactionRoleHandler(nil, silentLogger)
+	session := mockSession()
+
+	// When state user is nil, returns ok
+	ok, _ := handler.checkRoleHierarchy(session, "guild_1", "role_1")
+	if !ok {
+		t.Errorf("expected ok when state is uninitialized")
+	}
+}
