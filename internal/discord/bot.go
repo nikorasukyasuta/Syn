@@ -19,10 +19,11 @@ type Bot struct {
 	cfg            *config.Config
 	logger         *slog.Logger
 	routes         map[string]InteractionHandlerFunc
-	registeredCmds []*discordgo.ApplicationCommand
+	registeredCmds  []*discordgo.ApplicationCommand
 	rrHandler       *handlers.ReactionRoleHandler
 	memberHandler   *handlers.MemberJoinHandler
 	safewordHandler *handlers.SafewordHandler
+	ticketHandler   *handlers.TicketHandler
 	cache           *cache.ResourceCache
 }
 
@@ -35,6 +36,7 @@ func NewBot(
 	rrHandler *handlers.ReactionRoleHandler,
 	memberHandler *handlers.MemberJoinHandler,
 	safewordHandler *handlers.SafewordHandler,
+	ticketHandler *handlers.TicketHandler,
 	resCache *cache.ResourceCache,
 ) (*Bot, error) {
 	session, err := discordgo.New("Bot " + cfg.DiscordToken)
@@ -55,6 +57,7 @@ func NewBot(
 		rrHandler:       rrHandler,
 		memberHandler:   memberHandler,
 		safewordHandler: safewordHandler,
+		ticketHandler:   ticketHandler,
 		cache:           resCache,
 	}
 
@@ -97,7 +100,15 @@ func NewBot(
 		session.AddHandler(safewordHandler.HandleReactionAdd)
 	}
 
-	// 4. Bind Real-time Resource Cache Listeners (dynamically syncs Role & Channel mutations)
+	// 5. Register /ticket (All Users for open/close; Staff for panel)
+	if ticketHandler != nil {
+		b.RegisterCommand(
+			handlers.TicketCommandDefinition(),
+			RecoverPanic(logger, ticketHandler.HandleTicketCommand),
+		)
+	}
+
+	// 6. Bind Real-time Resource Cache Listeners (dynamically syncs Role & Channel mutations)
 	if resCache != nil {
 		session.AddHandler(resCache.HandleGuildRoleCreate)
 		session.AddHandler(resCache.HandleGuildRoleUpdate)
@@ -304,6 +315,9 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 			"custom_id", compData.CustomID,
 			"component_type", compData.ComponentType,
 		)
+		if b.ticketHandler != nil {
+			RecoverPanic(b.logger, b.ticketHandler.HandleComponentInteraction)(s, i)
+		}
 
 	case discordgo.InteractionModalSubmit:
 		modalData := i.ModalSubmitData()
@@ -315,6 +329,9 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 			"username", username,
 			"custom_id", modalData.CustomID,
 		)
+		if b.ticketHandler != nil {
+			RecoverPanic(b.logger, b.ticketHandler.HandleModalSubmit)(s, i)
+		}
 
 	default:
 		b.logger.Info("received interaction of type",

@@ -51,6 +51,7 @@ func main() {
 		"log_level", cfg.LogLevel,
 		"log_file", cfg.LogFilePath,
 		"guild_id", cfg.GuildID,
+		"ids_file", cfg.IDsFilePath,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -93,7 +94,12 @@ func main() {
 	// Safeword / RED Alert Handler
 	safewordHandler := handlers.NewSafewordHandler(cfg, auditRepo, logger)
 
-	bot, err := discord.NewBot(cfg, logger, verifyHandler, rrHandler, memberHandler, safewordHandler, resCache)
+	// Support & Verification Ticket System
+	ticketRepo := postgres.NewTicketRepo(dbPool)
+	ticketSvc := service.NewTicketService(ticketRepo, cfg.StaffRoleIDs, logger)
+	ticketHandler := handlers.NewTicketHandler(ticketSvc, cfg, resCache, logger)
+
+	bot, err := discord.NewBot(cfg, logger, verifyHandler, rrHandler, memberHandler, safewordHandler, ticketHandler, resCache)
 	if err != nil {
 		logger.Error("failed to initialize discord bot", "error", err)
 		os.Exit(1)
