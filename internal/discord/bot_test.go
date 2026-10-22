@@ -40,6 +40,9 @@ func TestNewBot_Success(t *testing.T) {
 	filterSvc := service.NewWordFilterService(nil, cfg.StaffRoleIDs, silentLogger)
 	ticketSvc := service.NewTicketService(nil, cfg.StaffRoleIDs, silentLogger)
 	filterHandler := handlers.NewFilterHandler(filterSvc, ticketSvc, cfg, resCache, silentLogger)
+	flashSvc := service.NewFlashDashService(nil, cfg.StaffRoleIDs, silentLogger)
+	flashHandler := handlers.NewFlashHandler(flashSvc, cfg, silentLogger)
+	legalHandler := handlers.NewLegalHandler(cfg)
 
 	bot, err := NewBot(
 		cfg,
@@ -52,6 +55,8 @@ func TestNewBot_Success(t *testing.T) {
 		healthHandler,
 		versionHandler,
 		filterHandler,
+		flashHandler,
+		legalHandler,
 		nil,
 		lockMgr,
 		resCache,
@@ -79,6 +84,18 @@ func TestNewBot_Success(t *testing.T) {
 	}
 	if _, ok := bot.routes["warnings"]; !ok {
 		t.Error("expected /warnings to be registered in bot.routes")
+	}
+	if _, ok := bot.routes["flash"]; !ok {
+		t.Error("expected /flash to be registered in bot.routes")
+	}
+	if _, ok := bot.routes["terms"]; !ok {
+		t.Error("expected /terms to be registered in bot.routes")
+	}
+	if _, ok := bot.routes["privacy"]; !ok {
+		t.Error("expected /privacy to be registered in bot.routes")
+	}
+	if bot.Session() == nil {
+		t.Error("expected bot.Session() to return non-nil session")
 	}
 
 	// Test RegisterCommand
@@ -153,7 +170,7 @@ func TestBot_ResolveAppID(t *testing.T) {
 		StaffRoleIDs:     []string{"role_staff_1"},
 	}
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}
@@ -191,7 +208,7 @@ func TestBot_TicketInteractionRouting(t *testing.T) {
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	svc := handlers.NewTicketHandler(nil, cfg, nil, silentLogger)
 
-	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, svc, nil, nil, nil, nil, nil, nil)
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, svc, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}
@@ -238,7 +255,7 @@ func TestBot_QueueInteractionRouting(t *testing.T) {
 	cmdQueue := queue.NewCommandQueue(50, 2, silentLogger)
 	defer cmdQueue.Stop(time.Second)
 
-	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil, nil, nil, nil, cmdQueue, nil, nil)
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, cmdQueue, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}

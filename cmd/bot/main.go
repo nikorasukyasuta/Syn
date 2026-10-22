@@ -19,6 +19,7 @@ import (
 	"syn/internal/repository/postgres"
 	"syn/internal/service"
 	"syn/internal/storage"
+	"syn/internal/web"
 	"syn/migrations"
 )
 
@@ -140,6 +141,22 @@ func main() {
 	}
 	filterHandler := handlers.NewFilterHandler(filterSvc, ticketSvc, cfg, resCache, logger)
 
+	// Flash and Dash Ephemeral Photo Channels
+	flashRepo := postgres.NewFlashRepo(dbPool)
+	flashSvc := service.NewFlashDashService(flashRepo, cfg.StaffRoleIDs, logger)
+	flashHandler := handlers.NewFlashHandler(flashSvc, cfg, logger)
+
+	// Legal and Privacy Command Handlers
+	legalHandler := handlers.NewLegalHandler(cfg)
+
+	// Public Web Server for Terms, Privacy Policy, and Health
+	webServer := web.NewServer(cfg.WebPort, logger)
+	go func() {
+		if err := webServer.Start(); err != nil {
+			logger.Error("web server stopped with error", "error", err)
+		}
+	}()
+
 	bot, err := discord.NewBot(
 		cfg,
 		logger,
@@ -151,6 +168,8 @@ func main() {
 		healthHandler,
 		versionHandler,
 		filterHandler,
+		flashHandler,
+		legalHandler,
 		cmdQueue,
 		lockMgr,
 		resCache,
@@ -166,6 +185,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize Flash and Dash service (warm load channels and resume pending deletion timers)
+	if err := flashSvc.Init(ctx, bot.Session(), cfg.GuildID); err != nil {
+		logger.Warn("failed to initialize flash and dash service", "error", err)
+	}
+
 	// 6. Block until OS termination signal (Docker stop / EC2 reboot)
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
@@ -173,9 +197,13 @@ func main() {
 
 	logger.Info("received shutdown signal, initiating graceful shutdown", "signal", sig.String())
 
-	// Allow up to 10 seconds for in-flight database transactions to complete
+	// Allow up to 10 seconds for in-flight database transactions and web requests to complete
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
+
+	if err := webServer.Shutdown(shutdownCtx); err != nil {
+		logger.ErrorContext(shutdownCtx, "error shutting down web server", "error", err)
+	}
 
 	if err := bot.Stop(); err != nil {
 		logger.ErrorContext(shutdownCtx, "error closing discord session", "error", err)

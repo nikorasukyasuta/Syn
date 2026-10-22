@@ -30,6 +30,8 @@ type Bot struct {
 	healthHandler   *handlers.HealthHandler
 	versionHandler  *handlers.VersionHandler
 	filterHandler   *handlers.FilterHandler
+	flashHandler    *handlers.FlashHandler
+	legalHandler    *handlers.LegalHandler
 	cmdQueue        *queue.CommandQueue
 	lockMgr         *syncutil.UserLockManager
 	rateLimiter     *ratelimit.UserRateLimiter
@@ -49,6 +51,8 @@ func NewBot(
 	healthHandler *handlers.HealthHandler,
 	versionHandler *handlers.VersionHandler,
 	filterHandler *handlers.FilterHandler,
+	flashHandler *handlers.FlashHandler,
+	legalHandler *handlers.LegalHandler,
 	cmdQueue *queue.CommandQueue,
 	lockMgr *syncutil.UserLockManager,
 	resCache *cache.ResourceCache,
@@ -84,6 +88,8 @@ func NewBot(
 		healthHandler:   healthHandler,
 		versionHandler:  versionHandler,
 		filterHandler:   filterHandler,
+		flashHandler:    flashHandler,
+		legalHandler:    legalHandler,
 		cmdQueue:        cmdQueue,
 		lockMgr:         lockMgr,
 		rateLimiter:     rateLimiter,
@@ -166,7 +172,28 @@ func NewBot(
 		session.AddHandler(filterHandler.HandleMessageCreate)
 	}
 
-	// 9. Bind Real-time Resource Cache Listeners (dynamically syncs Role & Channel mutations)
+	// 9. Register Flash & Dash Photo Channels (Staff for config; public message interceptor)
+	if flashHandler != nil {
+		b.RegisterCommand(
+			handlers.FlashCommandDefinition(),
+			b.wrapHandler(flashHandler.HandleFlashCommand, true, false),
+		)
+		session.AddHandler(flashHandler.HandleMessageCreate)
+	}
+
+	// 10. Register Legal & Privacy Slash Commands (Public Ephemeral)
+	if legalHandler != nil {
+		b.RegisterCommand(
+			handlers.TermsCommandDefinition(),
+			b.wrapHandler(legalHandler.HandleTermsCommand, false, false),
+		)
+		b.RegisterCommand(
+			handlers.PrivacyCommandDefinition(),
+			b.wrapHandler(legalHandler.HandlePrivacyCommand, false, false),
+		)
+	}
+
+	// 11. Bind Real-time Resource Cache Listeners (dynamically syncs Role & Channel mutations)
 	if resCache != nil {
 		session.AddHandler(resCache.HandleGuildRoleCreate)
 		session.AddHandler(resCache.HandleGuildRoleUpdate)
@@ -189,6 +216,11 @@ func NewBot(
 // Cache returns the dynamic server resource cache.
 func (b *Bot) Cache() *cache.ResourceCache {
 	return b.cache
+}
+
+// Session returns the underlying DiscordGo session.
+func (b *Bot) Session() *discordgo.Session {
+	return b.session
 }
 
 // RegisterCommand binds a slash command definition to its middleware-wrapped handler.

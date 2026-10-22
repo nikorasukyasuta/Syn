@@ -29,6 +29,8 @@ type Config struct {
 	TicketCategoryID    string // Optional: Category ID where ticket channels are created
 	TicketLogChannelID  string // Optional: Channel ID where ticket closures are logged
 	FiltersDir          string // Optional: Directory holding word filter JSON files (default: "./config/filters")
+	WebPort             string // Optional: Port for web terms/privacy/health server (default: "8080")
+	WebBaseURL          string // Optional: Base public URL for terms/privacy links (default: "http://localhost:8080")
 	IDsFilePath         string // Path to the file where Discord IDs were loaded from (if applicable)
 }
 
@@ -218,6 +220,17 @@ func Load() (*Config, error) {
 		filtersDir = "./config/filters"
 	}
 
+	webPort := os.Getenv("WEB_PORT")
+	if webPort == "" {
+		webPort = "8080"
+	}
+
+	webBaseURL := os.Getenv("WEB_BASE_URL")
+	if webBaseURL == "" {
+		webBaseURL = fmt.Sprintf("http://localhost:%s", webPort)
+	}
+	webBaseURL = strings.TrimRight(webBaseURL, "/")
+
 	cfg := &Config{
 		DiscordToken:        os.Getenv("DISCORD_TOKEN"),
 		GuildID:             guildID,
@@ -237,6 +250,8 @@ func Load() (*Config, error) {
 		TicketCategoryID:    ticketCat,
 		TicketLogChannelID:  ticketLog,
 		FiltersDir:          filtersDir,
+		WebPort:             webPort,
+		WebBaseURL:          webBaseURL,
 		IDsFilePath:         resolvedIDsPath,
 	}
 

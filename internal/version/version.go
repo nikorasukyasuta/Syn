@@ -7,7 +7,7 @@ import (
 
 // Current version and source repository constants.
 const (
-	CurrentVersion   = "v1.2.1"
+	CurrentVersion   = "v1.2.2"
 	GitRepositoryURL = "https://github.com/nikorasukyasuta/Syn"
 	ReleaseDate      = "2026-10-22"
 )
@@ -21,6 +21,15 @@ type Release struct {
 
 // History contains the chronological release log for the Syn bot.
 var History = []Release{
+	{
+		Version: "v1.2.2",
+		Date:    "2026-10-22",
+		Changes: []string{
+			"Flash and Dash photo channels with mandatory image auto-spoilering and configurable TTL deletion timers",
+			"Public web server hosting styled Terms & Conditions and Privacy Policy pages",
+			"Ephemeral Discord slash commands (/terms and /privacy) displaying policy summaries and web links",
+		},
+	},
 	{
 		Version: "v1.2.1",
 		Date:    "2026-10-22",
