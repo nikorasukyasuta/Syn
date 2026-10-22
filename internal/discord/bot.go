@@ -11,7 +11,9 @@ import (
 	"syn/internal/config"
 	"syn/internal/discord/cache"
 	"syn/internal/discord/handlers"
+	"syn/internal/discord/queue"
 	"syn/internal/discord/ratelimit"
+	"syn/internal/discord/syncutil"
 )
 
 // Bot encapsulates the Discord session, command router, resource cache, and lifecycle management.
@@ -25,6 +27,10 @@ type Bot struct {
 	memberHandler   *handlers.MemberJoinHandler
 	safewordHandler *handlers.SafewordHandler
 	ticketHandler   *handlers.TicketHandler
+	healthHandler   *handlers.HealthHandler
+	versionHandler  *handlers.VersionHandler
+	cmdQueue        *queue.CommandQueue
+	lockMgr         *syncutil.UserLockManager
 	rateLimiter     *ratelimit.UserRateLimiter
 	cache           *cache.ResourceCache
 }
@@ -39,6 +45,10 @@ func NewBot(
 	memberHandler *handlers.MemberJoinHandler,
 	safewordHandler *handlers.SafewordHandler,
 	ticketHandler *handlers.TicketHandler,
+	healthHandler *handlers.HealthHandler,
+	versionHandler *handlers.VersionHandler,
+	cmdQueue *queue.CommandQueue,
+	lockMgr *syncutil.UserLockManager,
 	resCache *cache.ResourceCache,
 ) (*Bot, error) {
 	session, err := discordgo.New("Bot " + cfg.DiscordToken)
@@ -67,6 +77,10 @@ func NewBot(
 		memberHandler:   memberHandler,
 		safewordHandler: safewordHandler,
 		ticketHandler:   ticketHandler,
+		healthHandler:   healthHandler,
+		versionHandler:  versionHandler,
+		cmdQueue:        cmdQueue,
+		lockMgr:         lockMgr,
 		rateLimiter:     rateLimiter,
 		cache:           resCache,
 	}
@@ -118,7 +132,23 @@ func NewBot(
 		)
 	}
 
-	// 6. Bind Real-time Resource Cache Listeners (dynamically syncs Role & Channel mutations)
+	// 6. Register /health (Public nominal status; Staff full infrastructure diagnostics)
+	if healthHandler != nil {
+		b.RegisterCommand(
+			handlers.HealthCommandDefinition(),
+			b.wrapHandler(healthHandler.HandleHealthCommand, false, false),
+		)
+	}
+
+	// 7. Register /version (Public bot version, update changelog, and GitHub source link)
+	if versionHandler != nil {
+		b.RegisterCommand(
+			handlers.VersionCommandDefinition(),
+			b.wrapHandler(versionHandler.HandleVersionCommand, false, false),
+		)
+	}
+
+	// 8. Bind Real-time Resource Cache Listeners (dynamically syncs Role & Channel mutations)
 	if resCache != nil {
 		session.AddHandler(resCache.HandleGuildRoleCreate)
 		session.AddHandler(resCache.HandleGuildRoleUpdate)
@@ -236,6 +266,9 @@ func (b *Bot) resolveAppID() (string, error) {
 // Stop cleanly closes the Discord WebSocket session during container shutdown.
 func (b *Bot) Stop() error {
 	b.logger.Info("closing discord websocket session")
+	if b.cmdQueue != nil {
+		b.cmdQueue.Stop(5 * time.Second)
+	}
 	if b.rateLimiter != nil {
 		b.rateLimiter.Stop()
 	}
@@ -307,21 +340,52 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 		)
 
 		if handler, exists := b.routes[cmdName]; exists {
-			handler(s, i)
+			if b.cmdQueue != nil {
+				enqueued := b.cmdQueue.Enqueue(&queue.Task{
+					ID:          i.ID,
+					CommandName: cmdName,
+					UserID:      userID,
+					Execute: func() {
+						handler(s, i)
+						b.logger.Info("completed slash command interaction",
+							"interaction_id", i.ID,
+							"command", cmdName,
+							"subcommand", subCmd,
+							"user_id", userID,
+							"duration_ms", time.Since(start).Milliseconds(),
+						)
+					},
+				})
+				if !enqueued {
+					b.logger.Error("failed to enqueue slash command interaction, falling back to direct execution",
+						"interaction_id", i.ID,
+						"command", cmdName,
+					)
+					handler(s, i)
+					b.logger.Info("completed slash command interaction",
+						"interaction_id", i.ID,
+						"command", cmdName,
+						"subcommand", subCmd,
+						"user_id", userID,
+						"duration_ms", time.Since(start).Milliseconds(),
+					)
+				}
+			} else {
+				handler(s, i)
+				b.logger.Info("completed slash command interaction",
+					"interaction_id", i.ID,
+					"command", cmdName,
+					"subcommand", subCmd,
+					"user_id", userID,
+					"duration_ms", time.Since(start).Milliseconds(),
+				)
+			}
 		} else {
 			b.logger.Warn("no handler registered for slash command",
 				"command", cmdName,
 				"interaction_id", i.ID,
 			)
 		}
-
-		b.logger.Info("completed slash command interaction",
-			"interaction_id", i.ID,
-			"command", cmdName,
-			"subcommand", subCmd,
-			"user_id", userID,
-			"duration_ms", time.Since(start).Milliseconds(),
-		)
 
 	case discordgo.InteractionApplicationCommandAutocomplete:
 		cmdData := i.ApplicationCommandData()

@@ -22,6 +22,15 @@ services:
       - no-new-privileges:true     # Blocks privilege escalation via setuid/setgid binaries
     cap_drop:
       - ALL                        # Drops all Linux kernel capabilities
+    cpus: 2.0                      # Allocate full 2 CPU cores available on EC2
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+        reservations:
+          cpus: '2.0'
+    environment:
+      GOMAXPROCS: "2"              # Guarantees Go runtime schedules threads across both CPU cores
     env_file:
       - path: .env
         required: false            # Allows starting with environment variables or external SSM/secrets without failing if .env is missing
@@ -45,6 +54,11 @@ services:
     image: postgres:17-alpine
     container_name: syn_db
     restart: unless-stopped
+    cpus: 2.0                      # Utilize both EC2 cores for database queries and index scans
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}

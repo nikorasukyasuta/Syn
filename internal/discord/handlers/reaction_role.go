@@ -8,23 +8,30 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"syn/internal/domain"
-	"syn/internal/service"
-	"syn/internal/storage"
 
 	"github.com/bwmarrin/discordgo"
 
+	"syn/internal/discord/syncutil"
+	"syn/internal/domain"
+	"syn/internal/service"
+	"syn/internal/storage"
 )
 
 // ReactionRoleHandler manages panel post creation, role linking, and live reaction events.
 type ReactionRoleHandler struct {
-	svc    *service.ReactionRoleService
-	logger *slog.Logger
+	svc     *service.ReactionRoleService
+	lockMgr *syncutil.UserLockManager
+	logger  *slog.Logger
 }
 
 // NewReactionRoleHandler constructs a new ReactionRoleHandler.
 func NewReactionRoleHandler(svc *service.ReactionRoleService, logger *slog.Logger) *ReactionRoleHandler {
 	return &ReactionRoleHandler{svc: svc, logger: logger}
+}
+
+// SetLockManager attaches a UserLockManager for serializing concurrent member role changes.
+func (h *ReactionRoleHandler) SetLockManager(lm *syncutil.UserLockManager) {
+	h.lockMgr = lm
 }
 
 // HandlePanelCommand routes /reaction-panel subcommands (create, set-image, add-role, remove-role).
@@ -244,6 +251,11 @@ func (h *ReactionRoleHandler) HandleReactionAdd(s *discordgo.Session, r *discord
 		return
 	}
 
+	if h.lockMgr != nil {
+		unlock := h.lockMgr.Lock(r.UserID)
+		defer unlock()
+	}
+
 	emojiKey := r.Emoji.APIName()
 	h.logger.Info("reaction role: reaction added event received",
 		"guild_id", r.GuildID,
@@ -338,6 +350,11 @@ func (h *ReactionRoleHandler) HandleReactionAdd(s *discordgo.Session, r *discord
 func (h *ReactionRoleHandler) HandleReactionRemove(s *discordgo.Session, r *discordgo.MessageReactionRemove) {
 	if r.GuildID == "" || (s.State.User != nil && r.UserID == s.State.User.ID) {
 		return
+	}
+
+	if h.lockMgr != nil {
+		unlock := h.lockMgr.Lock(r.UserID)
+		defer unlock()
 	}
 
 	emojiKey := r.Emoji.APIName()

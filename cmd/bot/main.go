@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	"syn/internal/discord"
 	"syn/internal/discord/cache"
 	"syn/internal/discord/handlers"
+	"syn/internal/discord/queue"
+	"syn/internal/discord/syncutil"
 	"syn/internal/logging"
 	"syn/internal/repository/postgres"
 	"syn/internal/service"
@@ -20,6 +23,10 @@ import (
 )
 
 func main() {
+	// 0. Maximize Go runtime concurrency across all available CPU cores (EC2 2-Core Instance)
+	numCPUs := runtime.NumCPU()
+	runtime.GOMAXPROCS(numCPUs)
+
 	// 1. Load and validate configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -79,8 +86,19 @@ func main() {
 	// 4. Wire Clean Architecture Layers (Repository -> Service -> Handlers/Cache -> Bot)
 	auditRepo := postgres.NewAuditRepo(dbPool)
 	verifyRepo := postgres.NewVerificationRepo(dbPool)
+
+	// Fine-grained per-user lock manager to serialize concurrent state/role changes per user
+	lockMgr := syncutil.NewUserLockManager()
+
+	// High-throughput asynchronous command queue (worker pool sized to match host cores)
+	workerCount := numCPUs * 2
+	if workerCount < 4 {
+		workerCount = 4
+	}
+	cmdQueue := queue.NewCommandQueue(1024, workerCount, logger)
+
 	verifySvc := service.NewVerificationService(verifyRepo, auditRepo, cfg.StaffRoleIDs, logger)
-	verifyHandler := handlers.NewVerifyHandler(verifySvc, cfg.VerifiedRoleID, cfg.UnverifiedRoleID, logger)
+	verifyHandler := handlers.NewVerifyHandler(verifySvc, cfg.VerifiedRoleID, cfg.UnverifiedRoleID, lockMgr, logger)
 
 	assetStore, err := storage.NewLocalAssetStore(cfg.AssetsDir)
 	if err != nil {
@@ -91,12 +109,14 @@ func main() {
 	rrRepo := postgres.NewReactionRoleRepo(dbPool)
 	rrSvc := service.NewReactionRoleService(rrRepo, verifyRepo, auditRepo, assetStore, cfg.StaffRoleIDs, cfg.VerifiedRoleID, logger)
 	rrHandler := handlers.NewReactionRoleHandler(rrSvc, logger)
+	rrHandler.SetLockManager(lockMgr)
 
 	// Dynamic Resource Cache for roles and channels
 	resCache := cache.NewResourceCache(logger)
 
 	// Automatic Member Join Handler for granting unverified role
 	memberHandler := handlers.NewMemberJoinHandler(cfg.GuildID, cfg.UnverifiedRoleID, logger)
+	memberHandler.SetLockManager(lockMgr)
 
 	// Safeword / RED Alert Handler
 	safewordHandler := handlers.NewSafewordHandler(cfg, auditRepo, logger)
@@ -106,7 +126,26 @@ func main() {
 	ticketSvc := service.NewTicketService(ticketRepo, cfg.StaffRoleIDs, logger)
 	ticketHandler := handlers.NewTicketHandler(ticketSvc, cfg, resCache, logger)
 
-	bot, err := discord.NewBot(cfg, logger, verifyHandler, rrHandler, memberHandler, safewordHandler, ticketHandler, resCache)
+	// Health and Infrastructure Diagnostics Handler (Public nominal, Staff deep diagnostics)
+	healthHandler := handlers.NewHealthHandler(cfg.StaffRoleIDs, dbPool, cmdQueue, lockMgr)
+
+	// Bot Versioning and GitHub Source Tracking Handler
+	versionHandler := handlers.NewVersionHandler()
+
+	bot, err := discord.NewBot(
+		cfg,
+		logger,
+		verifyHandler,
+		rrHandler,
+		memberHandler,
+		safewordHandler,
+		ticketHandler,
+		healthHandler,
+		versionHandler,
+		cmdQueue,
+		lockMgr,
+		resCache,
+	)
 	if err != nil {
 		logger.Error("failed to initialize discord bot", "error", err)
 		os.Exit(1)

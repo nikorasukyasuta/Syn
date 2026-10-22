@@ -4,12 +4,16 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
 	"syn/internal/config"
 	"syn/internal/discord/cache"
 	"syn/internal/discord/handlers"
+	"syn/internal/discord/queue"
+	"syn/internal/discord/syncutil"
+	"sync"
 )
 
 func TestNewBot_Success(t *testing.T) {
@@ -24,13 +28,29 @@ func TestNewBot_Success(t *testing.T) {
 	}
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 
-	verifyHandler := handlers.NewVerifyHandler(nil, cfg.VerifiedRoleID, cfg.UnverifiedRoleID)
+	lockMgr := syncutil.NewUserLockManager()
+	verifyHandler := handlers.NewVerifyHandler(nil, cfg.VerifiedRoleID, cfg.UnverifiedRoleID, lockMgr)
 	rrHandler := handlers.NewReactionRoleHandler(nil, silentLogger)
 	memberHandler := handlers.NewMemberJoinHandler(cfg.GuildID, cfg.UnverifiedRoleID, silentLogger)
 	resCache := cache.NewResourceCache(silentLogger)
-
 	safewordHandler := handlers.NewSafewordHandler(cfg, nil, silentLogger)
-	bot, err := NewBot(cfg, silentLogger, verifyHandler, rrHandler, memberHandler, safewordHandler, nil, resCache)
+	healthHandler := handlers.NewHealthHandler(cfg.StaffRoleIDs, nil, nil, lockMgr)
+	versionHandler := handlers.NewVersionHandler()
+
+	bot, err := NewBot(
+		cfg,
+		silentLogger,
+		verifyHandler,
+		rrHandler,
+		memberHandler,
+		safewordHandler,
+		nil,
+		healthHandler,
+		versionHandler,
+		nil,
+		lockMgr,
+		resCache,
+	)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}
@@ -40,6 +60,14 @@ func TestNewBot_Success(t *testing.T) {
 
 	if bot.Cache() != resCache {
 		t.Fatal("expected bot.Cache() to match provided cache")
+	}
+
+	// Verify routes registered
+	if _, ok := bot.routes["health"]; !ok {
+		t.Error("expected /health to be registered in bot.routes")
+	}
+	if _, ok := bot.routes["version"]; !ok {
+		t.Error("expected /version to be registered in bot.routes")
 	}
 
 	// Test RegisterCommand
@@ -114,7 +142,7 @@ func TestBot_ResolveAppID(t *testing.T) {
 		StaffRoleIDs:     []string{"role_staff_1"},
 	}
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil, nil)
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}
@@ -152,7 +180,7 @@ func TestBot_TicketInteractionRouting(t *testing.T) {
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	svc := handlers.NewTicketHandler(nil, cfg, nil, silentLogger)
 
-	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, svc, nil)
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, svc, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}
@@ -185,4 +213,54 @@ func TestBot_TicketInteractionRouting(t *testing.T) {
 	bot.handleInteraction(bot.session, modalInteraction)
 }
 
+func TestBot_QueueInteractionRouting(t *testing.T) {
+	t.Parallel()
 
+	cfg := &config.Config{
+		DiscordToken:     "mock_token",
+		GuildID:          "guild_123",
+		VerifiedRoleID:   "role_verified_123",
+		UnverifiedRoleID: "role_unverified_123",
+		StaffRoleIDs:     []string{"role_staff_1"},
+	}
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	cmdQueue := queue.NewCommandQueue(50, 2, silentLogger)
+	defer cmdQueue.Stop(time.Second)
+
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil, nil, nil, cmdQueue, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to create bot: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	bot.RegisterCommand(&discordgo.ApplicationCommand{Name: "queued-cmd"}, func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		wg.Done()
+	})
+
+	interaction := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			ID:   "int_queued",
+			Type: discordgo.InteractionApplicationCommand,
+			Data: discordgo.ApplicationCommandInteractionData{
+				Name: "queued-cmd",
+			},
+		},
+	}
+
+	bot.handleInteraction(bot.session, interaction)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Succeeded in routing through worker queue
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for queued command to execute")
+	}
+}
