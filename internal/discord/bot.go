@@ -29,6 +29,7 @@ type Bot struct {
 	ticketHandler   *handlers.TicketHandler
 	healthHandler   *handlers.HealthHandler
 	versionHandler  *handlers.VersionHandler
+	filterHandler   *handlers.FilterHandler
 	cmdQueue        *queue.CommandQueue
 	lockMgr         *syncutil.UserLockManager
 	rateLimiter     *ratelimit.UserRateLimiter
@@ -47,6 +48,7 @@ func NewBot(
 	ticketHandler *handlers.TicketHandler,
 	healthHandler *handlers.HealthHandler,
 	versionHandler *handlers.VersionHandler,
+	filterHandler *handlers.FilterHandler,
 	cmdQueue *queue.CommandQueue,
 	lockMgr *syncutil.UserLockManager,
 	resCache *cache.ResourceCache,
@@ -60,10 +62,12 @@ func NewBot(
 	session.Client.Timeout = 15 * time.Second
 	session.MaxRestRetries = 3
 
-	// IntentsGuildMessageReactions allows receiving reaction events without reading message content.
+	// Subscribe to Guilds, Members, Reactions, and Message Content for Word Filtering
 	session.Identify.Intents = discordgo.IntentsGuilds |
 		discordgo.IntentsGuildMembers |
-		discordgo.IntentsGuildMessageReactions
+		discordgo.IntentsGuildMessageReactions |
+		discordgo.IntentsGuildMessages |
+		discordgo.IntentsMessageContent
 
 	// In-memory token bucket rate limiter: burst of 5 commands, refilling 1 per second
 	rateLimiter := ratelimit.NewUserRateLimiter(5, time.Second, 5*time.Minute)
@@ -79,6 +83,7 @@ func NewBot(
 		ticketHandler:   ticketHandler,
 		healthHandler:   healthHandler,
 		versionHandler:  versionHandler,
+		filterHandler:   filterHandler,
 		cmdQueue:        cmdQueue,
 		lockMgr:         lockMgr,
 		rateLimiter:     rateLimiter,
@@ -148,7 +153,20 @@ func NewBot(
 		)
 	}
 
-	// 8. Bind Real-time Resource Cache Listeners (dynamically syncs Role & Channel mutations)
+	// 8. Register Word Filter and Moderation Warnings Handlers
+	if filterHandler != nil {
+		b.RegisterCommand(
+			handlers.FilterCommandDefinition(),
+			b.wrapHandler(filterHandler.HandleFilterCommand, true, false),
+		)
+		b.RegisterCommand(
+			handlers.WarningsCommandDefinition(),
+			b.wrapHandler(filterHandler.HandleWarningsCommand, true, false),
+		)
+		session.AddHandler(filterHandler.HandleMessageCreate)
+	}
+
+	// 9. Bind Real-time Resource Cache Listeners (dynamically syncs Role & Channel mutations)
 	if resCache != nil {
 		session.AddHandler(resCache.HandleGuildRoleCreate)
 		session.AddHandler(resCache.HandleGuildRoleUpdate)
@@ -440,6 +458,10 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 				respondForbidden(s, i, fmt.Sprintf("⏱️ **Slow down!** You are clicking buttons too quickly. Please wait %d second(s).", waitSec))
 				break
 			}
+		}
+
+		if b.filterHandler != nil && b.filterHandler.HandleComponentInteraction(s, i) {
+			break
 		}
 
 		if b.ticketHandler != nil {

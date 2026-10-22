@@ -28,6 +28,7 @@ type Config struct {
 	LogFormat           string
 	TicketCategoryID    string // Optional: Category ID where ticket channels are created
 	TicketLogChannelID  string // Optional: Channel ID where ticket closures are logged
+	FiltersDir          string // Optional: Directory holding word filter JSON files (default: "./config/filters")
 	IDsFilePath         string // Path to the file where Discord IDs were loaded from (if applicable)
 }
 
@@ -212,6 +213,11 @@ func Load() (*Config, error) {
 		logFormat = "json"
 	}
 
+	filtersDir := os.Getenv("FILTERS_DIR")
+	if filtersDir == "" {
+		filtersDir = "./config/filters"
+	}
+
 	cfg := &Config{
 		DiscordToken:        os.Getenv("DISCORD_TOKEN"),
 		GuildID:             guildID,
@@ -230,6 +236,7 @@ func Load() (*Config, error) {
 		LogFormat:           logFormat,
 		TicketCategoryID:    ticketCat,
 		TicketLogChannelID:  ticketLog,
+		FiltersDir:          filtersDir,
 		IDsFilePath:         resolvedIDsPath,
 	}
 

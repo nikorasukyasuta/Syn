@@ -13,6 +13,7 @@ import (
 	"syn/internal/discord/handlers"
 	"syn/internal/discord/queue"
 	"syn/internal/discord/syncutil"
+	"syn/internal/service"
 	"sync"
 )
 
@@ -36,6 +37,9 @@ func TestNewBot_Success(t *testing.T) {
 	safewordHandler := handlers.NewSafewordHandler(cfg, nil, silentLogger)
 	healthHandler := handlers.NewHealthHandler(cfg.StaffRoleIDs, nil, nil, lockMgr)
 	versionHandler := handlers.NewVersionHandler()
+	filterSvc := service.NewWordFilterService(nil, cfg.StaffRoleIDs, silentLogger)
+	ticketSvc := service.NewTicketService(nil, cfg.StaffRoleIDs, silentLogger)
+	filterHandler := handlers.NewFilterHandler(filterSvc, ticketSvc, cfg, resCache, silentLogger)
 
 	bot, err := NewBot(
 		cfg,
@@ -47,6 +51,7 @@ func TestNewBot_Success(t *testing.T) {
 		nil,
 		healthHandler,
 		versionHandler,
+		filterHandler,
 		nil,
 		lockMgr,
 		resCache,
@@ -68,6 +73,12 @@ func TestNewBot_Success(t *testing.T) {
 	}
 	if _, ok := bot.routes["version"]; !ok {
 		t.Error("expected /version to be registered in bot.routes")
+	}
+	if _, ok := bot.routes["filter"]; !ok {
+		t.Error("expected /filter to be registered in bot.routes")
+	}
+	if _, ok := bot.routes["warnings"]; !ok {
+		t.Error("expected /warnings to be registered in bot.routes")
 	}
 
 	// Test RegisterCommand
@@ -142,7 +153,7 @@ func TestBot_ResolveAppID(t *testing.T) {
 		StaffRoleIDs:     []string{"role_staff_1"},
 	}
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}
@@ -180,7 +191,7 @@ func TestBot_TicketInteractionRouting(t *testing.T) {
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	svc := handlers.NewTicketHandler(nil, cfg, nil, silentLogger)
 
-	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, svc, nil, nil, nil, nil, nil)
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, svc, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}
@@ -227,7 +238,7 @@ func TestBot_QueueInteractionRouting(t *testing.T) {
 	cmdQueue := queue.NewCommandQueue(50, 2, silentLogger)
 	defer cmdQueue.Stop(time.Second)
 
-	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil, nil, nil, cmdQueue, nil, nil)
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil, nil, nil, nil, cmdQueue, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}

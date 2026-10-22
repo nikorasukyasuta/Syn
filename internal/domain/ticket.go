@@ -22,8 +22,9 @@ const (
 	TicketTypeVerification TicketType = "verification"
 	TicketTypeReport       TicketType = "report"
 	TicketTypeBug          TicketType = "bug"
-	TicketTypeAccountIssue TicketType = "account_issue"
-	TicketTypeSupport      TicketType = "support"
+	TicketTypeAccountIssue  TicketType = "account_issue"
+	TicketTypeSupport       TicketType = "support"
+	TicketTypeFilteredWords TicketType = "filtered_words"
 )
 
 // AllTicketTypes returns all supported ticket types.
@@ -33,12 +34,13 @@ var AllTicketTypes = []TicketType{
 	TicketTypeBug,
 	TicketTypeAccountIssue,
 	TicketTypeSupport,
+	TicketTypeFilteredWords,
 }
 
 // IsValid validates whether a ticket type is supported.
 func (t TicketType) IsValid() bool {
 	switch t {
-	case TicketTypeVerification, TicketTypeReport, TicketTypeBug, TicketTypeAccountIssue, TicketTypeSupport:
+	case TicketTypeVerification, TicketTypeReport, TicketTypeBug, TicketTypeAccountIssue, TicketTypeSupport, TicketTypeFilteredWords:
 		return true
 	default:
 		return false
@@ -58,6 +60,8 @@ func (t TicketType) DisplayName() string {
 		return "Account Issue Ticket"
 	case TicketTypeSupport:
 		return "Support Ticket"
+	case TicketTypeFilteredWords:
+		return "Filtered Words Ticket"
 	default:
 		return string(t)
 	}
@@ -76,6 +80,8 @@ func (t TicketType) Emoji() string {
 		return "👤"
 	case TicketTypeSupport:
 		return "💬"
+	case TicketTypeFilteredWords:
+		return "🚫"
 	default:
 		return "🎫"
 	}
@@ -94,6 +100,8 @@ func (t TicketType) ChannelPrefix() string {
 		return "account"
 	case TicketTypeSupport:
 		return "support"
+	case TicketTypeFilteredWords:
+		return "banned-word"
 	default:
 		return "ticket"
 	}
@@ -113,6 +121,8 @@ func ParseTicketType(raw string) (TicketType, error) {
 		return TicketTypeAccountIssue, nil
 	case "support":
 		return TicketTypeSupport, nil
+	case "filtered_words", "filtered-words", "banned_words", "banned-words", "filter":
+		return TicketTypeFilteredWords, nil
 	default:
 		return "", ErrInvalidTicketType
 	}

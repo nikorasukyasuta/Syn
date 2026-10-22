@@ -7,7 +7,7 @@ import (
 
 // Current version and source repository constants.
 const (
-	CurrentVersion   = "v1.2.0"
+	CurrentVersion   = "v1.2.1"
 	GitRepositoryURL = "https://github.com/nikorasukyasuta/Syn"
 	ReleaseDate      = "2026-10-22"
 )
@@ -21,6 +21,18 @@ type Release struct {
 
 // History contains the chronological release log for the Syn bot.
 var History = []Release{
+	{
+		Version: "v1.2.1",
+		Date:    "2026-10-22",
+		Changes: []string{
+			"Automated Server-Wide and Channel-Specific Word Filters with instant message deletion",
+			"Case-insensitive in-memory word filter cache with file-based JSON configuration",
+			"Staff runtime cache reload command (/filter reload [channel]) preserving cache on missing files",
+			"Automatic moderation ticket provisioning on filter triggers with user and staff access",
+			"Dual ticket resolution actions: [Warn User] and [Close without Warning]",
+			"Permanent PostgreSQL moderation warnings audit trail with user history lookup (/warnings)",
+		},
+	},
 	{
 		Version: "v1.2.0",
 		Date:    "2026-10-22",
@@ -70,4 +82,3 @@ func FormatSummary() string {
 	}
 	return b.String()
 }
-

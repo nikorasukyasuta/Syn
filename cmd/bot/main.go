@@ -132,6 +132,14 @@ func main() {
 	// Bot Versioning and GitHub Source Tracking Handler
 	versionHandler := handlers.NewVersionHandler()
 
+	// Automated Word Filter and Moderation Warnings
+	warningRepo := postgres.NewWarningRepo(dbPool)
+	filterSvc := service.NewWordFilterService(warningRepo, cfg.StaffRoleIDs, logger)
+	if err := filterSvc.LoadAll(cfg.FiltersDir); err != nil {
+		logger.Warn("filter service initial load completed with warning", "error", err, "dir", cfg.FiltersDir)
+	}
+	filterHandler := handlers.NewFilterHandler(filterSvc, ticketSvc, cfg, resCache, logger)
+
 	bot, err := discord.NewBot(
 		cfg,
 		logger,
@@ -142,6 +150,7 @@ func main() {
 		ticketHandler,
 		healthHandler,
 		versionHandler,
+		filterHandler,
 		cmdQueue,
 		lockMgr,
 		resCache,

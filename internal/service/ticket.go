@@ -34,6 +34,11 @@ func (s *TicketService) CheckCanOpen(ctx context.Context, guildID, creatorID str
 		return nil, domain.ErrInvalidTicketType
 	}
 
+	// Filter violation tickets can always be opened even if an earlier violation ticket is active
+	if ticketType == domain.TicketTypeFilteredWords {
+		return nil, nil
+	}
+
 	existing, err := s.repo.GetActiveTicket(ctx, guildID, creatorID, ticketType)
 	if err != nil {
 		return nil, fmt.Errorf("checking for existing active ticket: %w", err)
