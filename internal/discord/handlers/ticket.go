@@ -238,10 +238,18 @@ func (h *TicketHandler) processTicketCreation(
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 1. Enforce max 1 ticket of each type at a time
+	// 1. Immediately defer interaction response to prevent Discord 3-second timeout
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Flags: discordgo.MessageFlagsEphemeral,
+		},
+	})
+
+	// 2. Enforce max 1 ticket of each type at a time
 	existing, err := h.svc.CheckCanOpen(ctx, i.GuildID, caller.ID, ticketType)
 	if errors.Is(err, domain.ErrTicketAlreadyOpen) {
-		h.respondEphemeral(s, i, fmt.Sprintf(
+		h.sendDeferredFollowup(s, i, fmt.Sprintf(
 			"❌ You already have an open %s in <#%s>. Please use or close that ticket before opening another.",
 			ticketType.DisplayName(),
 			existing.ChannelID,
@@ -250,17 +258,9 @@ func (h *TicketHandler) processTicketCreation(
 	}
 	if err != nil {
 		h.logger.Error("error checking open tickets", "error", err, "user_id", caller.ID)
-		h.respondEphemeral(s, i, "An error occurred while validating your active tickets. Please try again.")
+		h.sendDeferredFollowup(s, i, "An error occurred while validating your active tickets. Please try again.")
 		return
 	}
-
-	// 2. Defer interaction response to prevent Discord 3-second timeout during channel creation
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Flags: discordgo.MessageFlagsEphemeral,
-		},
-	})
 
 	// 3. Resolve parent category
 	categoryID := h.resolveTicketCategory(s, i.GuildID)
@@ -740,13 +740,16 @@ func BuildTicketPanelButtons() []discordgo.MessageComponent {
 }
 
 func (h *TicketHandler) respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, message string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content: message,
 			Flags:   discordgo.MessageFlagsEphemeral,
 		},
 	})
+	if err != nil {
+		h.sendDeferredFollowup(s, i, message)
+	}
 }
 
 func (h *TicketHandler) sendDeferredFollowup(s *discordgo.Session, i *discordgo.InteractionCreate, message string) {

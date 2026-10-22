@@ -149,11 +149,17 @@ func (h *VerifyHandler) HandleVerifyCommand(s *discordgo.Session, i *discordgo.I
 }
 
 func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, message string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content: message,
 			Flags:   discordgo.MessageFlagsEphemeral,
 		},
 	})
+	if err != nil {
+		_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: message,
+			Flags:   discordgo.MessageFlagsEphemeral,
+		})
+	}
 }
