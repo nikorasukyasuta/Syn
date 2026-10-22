@@ -1,18 +1,33 @@
 services:
+  # One-shot init service ensures host logs directory has open write permissions before bot starts
+  init-logs:
+    image: alpine:latest
+    command: ["sh", "-c", "mkdir -p /app/logs /app/assets/panels && chmod -R 777 /app/logs"]
+    volumes:
+      - ${LOGS_HOST_DIR:-./logs}:/app/logs:rw
+      - ${ASSETS_HOST_DIR:-./assets/panels}:/app/assets/panels:rw
+    restart: "no"
+
   bot:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: syn_app
+    user: "0:0"
     restart: unless-stopped
     read_only: true                # Prevents attackers from writing files to the container filesystem
+    tmpfs:
+      - /tmp
     security_opt:
       - no-new-privileges:true     # Blocks privilege escalation via setuid/setgid binaries
     cap_drop:
       - ALL                        # Drops all Linux kernel capabilities
     env_file:
-      - .env                       # Or fetch dynamically via AWS IAM Instance Profile + SSM
+      - path: .env
+        required: false            # Allows starting with environment variables or external SSM/secrets without failing if .env is missing
     volumes:
+      # Mount external Discord IDs configuration file (Guild ID, Role IDs, Channel IDs)
+      - ./config:/app/config:ro
       # Mount local EC2 image files into the container as strictly Read-Only (defaults to ./assets/panels)
       - ${ASSETS_HOST_DIR:-./assets/panels}:/app/assets/panels:ro
       # Mount writable logs directory for rotating log files on disk
@@ -20,6 +35,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      init-logs:
+        condition: service_completed_successfully
     networks:
       - external_net               # Allows outbound WebSocket/HTTPS to Discord API
       - db_internal_net            # Allows internal connection to Postgres

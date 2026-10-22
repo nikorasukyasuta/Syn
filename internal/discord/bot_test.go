@@ -29,7 +29,8 @@ func TestNewBot_Success(t *testing.T) {
 	memberHandler := handlers.NewMemberJoinHandler(cfg.GuildID, cfg.UnverifiedRoleID, silentLogger)
 	resCache := cache.NewResourceCache(silentLogger)
 
-	bot, err := NewBot(cfg, silentLogger, verifyHandler, rrHandler, memberHandler, resCache)
+	safewordHandler := handlers.NewSafewordHandler(cfg, nil, silentLogger)
+	bot, err := NewBot(cfg, silentLogger, verifyHandler, rrHandler, memberHandler, safewordHandler, nil, resCache)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}
@@ -75,6 +76,31 @@ func TestNewBot_Success(t *testing.T) {
 		},
 	}
 	bot.handleInteraction(bot.session, unhandledInteraction)
+
+	// Test nil interaction
+	bot.handleInteraction(bot.session, nil)
+	bot.handleInteraction(bot.session, &discordgo.InteractionCreate{})
+
+	// Test Component interaction logging
+	bot.handleInteraction(bot.session, &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			Type: discordgo.InteractionMessageComponent,
+			Data: discordgo.MessageComponentInteractionData{
+				CustomID:      "test_button",
+				ComponentType: discordgo.ButtonComponent,
+			},
+		},
+	})
+
+	// Test Modal Submit interaction logging
+	bot.handleInteraction(bot.session, &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			Type: discordgo.InteractionModalSubmit,
+			Data: discordgo.ModalSubmitInteractionData{
+				CustomID: "test_modal",
+			},
+		},
+	})
 }
 
 func TestBot_ResolveAppID(t *testing.T) {
@@ -88,7 +114,7 @@ func TestBot_ResolveAppID(t *testing.T) {
 		StaffRoleIDs:     []string{"role_staff_1"},
 	}
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil)
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}
@@ -111,6 +137,52 @@ func TestBot_ResolveAppID(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error with mock token, got nil")
 	}
+}
+
+func TestBot_TicketInteractionRouting(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{
+		DiscordToken:     "mock_token",
+		GuildID:          "guild_123",
+		VerifiedRoleID:   "role_verified_123",
+		UnverifiedRoleID: "role_unverified_123",
+		StaffRoleIDs:     []string{"role_staff_1"},
+	}
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	svc := handlers.NewTicketHandler(nil, cfg, nil, silentLogger)
+
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, svc, nil)
+	if err != nil {
+		t.Fatalf("failed to create bot: %v", err)
+	}
+
+	// Verify /ticket was registered
+	if _, exists := bot.routes["ticket"]; !exists {
+		t.Fatal("expected /ticket command to be registered in bot.routes")
+	}
+
+	// Verify Component Interaction routing does not panic
+	compInteraction := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			Type: discordgo.InteractionMessageComponent,
+			Data: discordgo.MessageComponentInteractionData{
+				CustomID: "btn_ticket_create:invalid",
+			},
+		},
+	}
+	bot.handleInteraction(bot.session, compInteraction)
+
+	// Verify Modal Submit interaction routing does not panic
+	modalInteraction := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			Type: discordgo.InteractionModalSubmit,
+			Data: discordgo.ModalSubmitInteractionData{
+				CustomID: "modal_ticket_close",
+			},
+		},
+	}
+	bot.handleInteraction(bot.session, modalInteraction)
 }
 
 

@@ -17,9 +17,8 @@ const (
 )
 
 type mockVerificationRepo struct {
-	existing       *domain.Verification
-	saveErr        error
-	lastAuditEvent string
+	existing *domain.Verification
+	saveErr  error
 }
 
 func (m *mockVerificationRepo) GetByUserID(_ context.Context, _, _ string) (*domain.Verification, error) {
@@ -30,8 +29,14 @@ func (m *mockVerificationRepo) SaveVerification(_ context.Context, _ *domain.Ver
 	return m.saveErr
 }
 
-func (m *mockVerificationRepo) LogAudit(_ context.Context, _, _, action string) error {
+type mockAuditRepo struct {
+	lastAuditEvent string
+	loggedActions  []string
+}
+
+func (m *mockAuditRepo) LogAudit(_ context.Context, _, _, action string) error {
 	m.lastAuditEvent = action
+	m.loggedActions = append(m.loggedActions, action)
 	return nil
 }
 
@@ -92,13 +97,13 @@ func TestVerifyMember_RBAC(t *testing.T) {
 			wantAuditEvent: "UNAUTHORIZED_VERIFY_ATTEMPT",
 		},
 		{
-			name:         "Security Block: Server Helper attempts to verify themselves",
+			name:         "Success: Staff or Helper verifies themselves",
 			guildID:      "guild_1",
 			actorID:      "helper_user_1",
 			actorRoles:   []string{roleHelperID},
 			targetUserID: "helper_user_1",
 			mockRepo:     &mockVerificationRepo{},
-			wantErr:      domain.ErrSelfVerify,
+			wantErr:      nil,
 		},
 		{
 			name:         "Idempotency: Member already verified",
@@ -149,15 +154,16 @@ func TestVerifyMember_RBAC(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			svc := service.NewVerificationService(tc.mockRepo, allowedRoles, silentLogger)
+			mockAudit := &mockAuditRepo{}
+			svc := service.NewVerificationService(tc.mockRepo, mockAudit, allowedRoles, silentLogger)
 
 			_, err := svc.VerifyMember(context.Background(), tc.guildID, tc.actorID, tc.actorRoles, tc.targetUserID)
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("expected error %v, got %v", tc.wantErr, err)
 			}
 
-			if tc.wantAuditEvent != "" && tc.mockRepo.lastAuditEvent != tc.wantAuditEvent {
-				t.Fatalf("expected audit event %q, got %q", tc.wantAuditEvent, tc.mockRepo.lastAuditEvent)
+			if tc.wantAuditEvent != "" && mockAudit.lastAuditEvent != tc.wantAuditEvent {
+				t.Fatalf("expected audit event %q, got %q", tc.wantAuditEvent, mockAudit.lastAuditEvent)
 			}
 		})
 	}

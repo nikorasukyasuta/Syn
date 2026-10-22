@@ -130,7 +130,7 @@ func TestReactionRoleService_CreateBinding(t *testing.T) {
 			t.Parallel()
 			rrRepo := &mockReactionRoleRepo{}
 			vRepo := &mockVerificationRepo{}
-			svc := service.NewReactionRoleService(rrRepo, vRepo, nil, staffRoles, verifiedRole, silentLogger)
+			svc := service.NewReactionRoleService(rrRepo, vRepo, &mockAuditRepo{}, nil, staffRoles, verifiedRole, silentLogger)
 
 			err := svc.CreateBinding(context.Background(), tc.actorID, tc.actorRoles, tc.rr)
 			if !errors.Is(err, tc.wantErr) {
@@ -198,7 +198,7 @@ func TestReactionRoleService_ResolveReactionForAdd(t *testing.T) {
 			t.Parallel()
 			rrRepo := &mockReactionRoleRepo{mapping: tc.mapping}
 			vRepo := &mockVerificationRepo{existing: tc.verifiedDB}
-			svc := service.NewReactionRoleService(rrRepo, vRepo, nil, staffRoles, verifiedRole, silentLogger)
+			svc := service.NewReactionRoleService(rrRepo, vRepo, &mockAuditRepo{}, nil, staffRoles, verifiedRole, silentLogger)
 
 			roleID, err := svc.ResolveReactionForAdd(context.Background(), "guild_1", "msg_100", "🪢", "user_1")
 			if !errors.Is(err, tc.wantErr) {
@@ -267,7 +267,7 @@ func TestReactionRoleService_SavePanelMetadata(t *testing.T) {
 			t.Parallel()
 			rrRepo := &mockReactionRoleRepo{}
 			vRepo := &mockVerificationRepo{}
-			svc := service.NewReactionRoleService(rrRepo, vRepo, nil, staffRoles, "role_verified", silentLogger)
+			svc := service.NewReactionRoleService(rrRepo, vRepo, &mockAuditRepo{}, nil, staffRoles, "role_verified", silentLogger)
 
 			err := svc.SavePanelMetadata(context.Background(), tc.actorID, tc.actorRoles, tc.panel)
 			if !errors.Is(err, tc.wantErr) {
@@ -326,7 +326,7 @@ func TestReactionRoleService_RemoveBinding(t *testing.T) {
 			t.Parallel()
 			rrRepo := &mockReactionRoleRepo{}
 			vRepo := &mockVerificationRepo{}
-			svc := service.NewReactionRoleService(rrRepo, vRepo, nil, staffRoles, "role_verified", silentLogger)
+			svc := service.NewReactionRoleService(rrRepo, vRepo, &mockAuditRepo{}, nil, staffRoles, "role_verified", silentLogger)
 
 			err := svc.RemoveBinding(context.Background(), tc.actorID, tc.actorRoles, tc.guildID, tc.messageID, tc.emoji)
 			if !errors.Is(err, tc.wantErr) {
@@ -349,7 +349,7 @@ func TestReactionRoleService_ResolveReactionForRemove(t *testing.T) {
 
 	rrRepo := &mockReactionRoleRepo{mapping: mapping}
 	vRepo := &mockVerificationRepo{}
-	svc := service.NewReactionRoleService(rrRepo, vRepo, nil, []string{"staff"}, "verified", silentLogger)
+	svc := service.NewReactionRoleService(rrRepo, vRepo, &mockAuditRepo{}, nil, []string{"staff"}, "verified", silentLogger)
 
 	// 1. Success
 	roleID, err := svc.ResolveReactionForRemove(context.Background(), "guild_1", "msg_1", "🪢")
@@ -403,7 +403,7 @@ func TestReactionRoleService_PanelAssetsAndImages(t *testing.T) {
 		},
 	}
 	vRepo := &mockVerificationRepo{}
-	svc := service.NewReactionRoleService(rrRepo, vRepo, assetStore, staffRoles, "role_verified", silentLogger)
+	svc := service.NewReactionRoleService(rrRepo, vRepo, &mockAuditRepo{}, assetStore, staffRoles, "role_verified", silentLogger)
 
 	// 1. ListEC2ImageFiles
 	files, err := svc.ListEC2ImageFiles()

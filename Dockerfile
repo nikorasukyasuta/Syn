@@ -21,26 +21,24 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-} go build \
     -ldflags="-w -s" \
     -o /build/syn ./cmd/bot/main.go
 
-# Pre-create writable runtime directories with open permissions for nonroot (UID 65532)
-RUN mkdir -p /build/logs /build/assets/panels && \
-    chmod -R 0777 /build/logs /build/assets/panels
+# Pre-create writable runtime directories with open permissions
+RUN mkdir -p /build/logs /build/assets/panels /build/config && \
+    chmod -R 0777 /build/logs /build/assets/panels /build/config
 
-# Stage 2: Enterprise Distroless Runtime (Non-Root)
-FROM gcr.io/distroless/static-debian12:nonroot
+# Stage 2: Enterprise Distroless Runtime
+FROM gcr.io/distroless/static-debian12:latest
 
 WORKDIR /app
 
 # Copy timezone data from builder stage
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
-# Copy pre-configured runtime directories with nonroot ownership
-COPY --from=builder --chown=nonroot:nonroot /build/logs /app/logs
-COPY --from=builder --chown=nonroot:nonroot /build/assets/panels /app/assets/panels
+# Copy pre-configured runtime directories
+COPY --from=builder /build/logs /app/logs
+COPY --from=builder /build/assets/panels /app/assets/panels
+COPY --from=builder /build/config /app/config
 
 # Copy the compiled binary from the builder stage
 COPY --from=builder /build/syn /app/syn
-
-# Run as unprivileged nonroot user (UID 65532)
-USER nonroot:nonroot
 
 ENTRYPOINT ["/app/syn"]

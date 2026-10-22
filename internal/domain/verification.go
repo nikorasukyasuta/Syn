@@ -23,9 +23,8 @@ type Verification struct {
 	VerifiedAt    time.Time
 }
 
-// VerificationRepository defines the contract for database persistence.
+// VerificationRepository defines the contract for database persistence of member verifications.
 type VerificationRepository interface {
 	GetByUserID(ctx context.Context, guildID, userID string) (*Verification, error)
 	SaveVerification(ctx context.Context, v *Verification) error
-	LogAudit(ctx context.Context, actorID, targetID, action string) error
 }

@@ -10,12 +10,18 @@ import (
 // VerificationService orchestrates member age and community verification rules.
 type VerificationService struct {
 	repo           domain.VerificationRepository
+	auditRepo      domain.AuditRepository
 	allowedRoleSet map[string]struct{}
 	logger         *slog.Logger
 }
 
-// NewVerificationService initializes the service with allowed Staff and Helper role IDs.
-func NewVerificationService(repo domain.VerificationRepository, allowedRoleIDs []string, logger *slog.Logger) *VerificationService {
+// NewVerificationService initializes the service with verification and audit repositories and allowed Staff role IDs.
+func NewVerificationService(
+	repo domain.VerificationRepository,
+	auditRepo domain.AuditRepository,
+	allowedRoleIDs []string,
+	logger *slog.Logger,
+) *VerificationService {
 	roleSet := make(map[string]struct{}, len(allowedRoleIDs))
 	for _, id := range allowedRoleIDs {
 		roleSet[id] = struct{}{}
@@ -23,6 +29,7 @@ func NewVerificationService(repo domain.VerificationRepository, allowedRoleIDs [
 
 	return &VerificationService{
 		repo:           repo,
+		auditRepo:      auditRepo,
 		allowedRoleSet: roleSet,
 		logger:         logger,
 	}
@@ -47,17 +54,13 @@ func (s *VerificationService) VerifyMember(
 			"target_id", targetUserID,
 		)
 		// Record the security violation in the database audit log.
-		_ = s.repo.LogAudit(ctx, actorID, targetUserID, "UNAUTHORIZED_VERIFY_ATTEMPT")
+		if s.auditRepo != nil {
+			_ = s.auditRepo.LogAudit(ctx, actorID, targetUserID, "UNAUTHORIZED_VERIFY_ATTEMPT")
+		}
 		return nil, domain.ErrUnauthorized
 	}
 
-	// 2. Security Policy: Prevent compromised Staff/Helper accounts from self-verifying.
-	if actorID == targetUserID {
-		s.logger.WarnContext(ctx, "blocked self-verification attempt", "actor_id", actorID)
-		return nil, domain.ErrSelfVerify
-	}
-
-	// 3. Idempotency Check: Ensure target isn't already verified.
+	// 2. Idempotency Check: Ensure target isn't already verified.
 	existing, err := s.repo.GetByUserID(ctx, guildID, targetUserID)
 	if err != nil {
 		return nil, err

@@ -37,8 +37,9 @@ func clearEnv(t *testing.T, keys ...string) {
 }
 
 func TestConfig_Load_SuccessWithDatabaseURL(t *testing.T) {
-	clearEnv(t, "DISCORD_TOKEN", "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DATABASE_URL", "ASSETS_DIR", "LOG_LEVEL", "LOG_FILE_PATH", "LOG_MAX_SIZE_MB", "LOG_MAX_BACKUPS", "LOG_MAX_AGE_DAYS", "LOG_FORMAT")
+	clearEnv(t, "DISCORD_TOKEN", "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DATABASE_URL", "ASSETS_DIR", "LOG_LEVEL", "LOG_FILE_PATH", "LOG_MAX_SIZE_MB", "LOG_MAX_BACKUPS", "LOG_MAX_AGE_DAYS", "LOG_FORMAT", "DISCORD_TICKET_CATEGORY_ID", "DISCORD_TICKET_LOG_CHANNEL_ID", "DISCORD_IDS_FILE")
 
+	setEnv(t, "DISCORD_IDS_FILE", "/non_existent_test_ids.json")
 	setEnv(t, "DISCORD_TOKEN", "token_123")
 	setEnv(t, "DISCORD_GUILD_ID", "guild_456")
 	setEnv(t, "DISCORD_VERIFIED_ROLE_ID", "role_789")
@@ -52,6 +53,8 @@ func TestConfig_Load_SuccessWithDatabaseURL(t *testing.T) {
 	setEnv(t, "LOG_MAX_BACKUPS", "10")
 	setEnv(t, "LOG_MAX_AGE_DAYS", "60")
 	setEnv(t, "LOG_FORMAT", "text")
+	setEnv(t, "DISCORD_TICKET_CATEGORY_ID", "cat_999")
+	setEnv(t, "DISCORD_TICKET_LOG_CHANNEL_ID", "log_888")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -73,6 +76,12 @@ func TestConfig_Load_SuccessWithDatabaseURL(t *testing.T) {
 	if len(cfg.StaffRoleIDs) != 2 || cfg.StaffRoleIDs[0] != "role_staff" || cfg.StaffRoleIDs[1] != "role_helper" {
 		t.Errorf("unexpected staff roles: %v", cfg.StaffRoleIDs)
 	}
+	if cfg.TicketCategoryID != "cat_999" {
+		t.Errorf("expected ticket category cat_999, got %s", cfg.TicketCategoryID)
+	}
+	if cfg.TicketLogChannelID != "log_888" {
+		t.Errorf("expected ticket log channel log_888, got %s", cfg.TicketLogChannelID)
+	}
 	if cfg.DatabaseURL != "postgres://user:pass@localhost:5432/db?sslmode=disable" {
 		t.Errorf("unexpected db url: %s", cfg.DatabaseURL)
 	}
@@ -91,8 +100,9 @@ func TestConfig_Load_SuccessWithDatabaseURL(t *testing.T) {
 }
 
 func TestConfig_Load_ConstructDatabaseURL(t *testing.T) {
-	clearEnv(t, "DISCORD_TOKEN", "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DATABASE_URL", "DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME", "DB_SSLMODE", "ASSETS_DIR")
+	clearEnv(t, "DISCORD_TOKEN", "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DATABASE_URL", "DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME", "DB_SSLMODE", "ASSETS_DIR", "DISCORD_IDS_FILE")
 
+	setEnv(t, "DISCORD_IDS_FILE", "/non_existent_test_ids.json")
 	setEnv(t, "DISCORD_TOKEN", "tok")
 	setEnv(t, "DISCORD_GUILD_ID", "gid")
 	setEnv(t, "DISCORD_VERIFIED_ROLE_ID", "vrole")
@@ -121,6 +131,70 @@ func TestConfig_Load_ConstructDatabaseURL(t *testing.T) {
 	}
 }
 
+func TestConfig_Load_FromDiscordIDsJSON(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "discord_ids_test_*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	jsonContent := `{
+		"guild_id": "file_guild_123",
+		"roles": {
+			"verified_role_id": "file_verified_456",
+			"unverified_role_id": "file_unverified_789",
+			"staff_role_ids": ["file_staff_1", "file_staff_2"]
+		},
+		"channels": {
+			"ticket_category_id": "file_ticket_cat_111",
+			"ticket_log_channel_id": "file_ticket_log_222",
+			"staff_alert_channel_id": "file_staff_alert_333"
+		}
+	}`
+	if _, err := tmpFile.WriteString(jsonContent); err != nil {
+		t.Fatalf("failed writing temp json: %v", err)
+	}
+	_ = tmpFile.Close()
+
+	// Clear all role/guild IDs from environment
+	clearEnv(t, "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DISCORD_TICKET_CATEGORY_ID", "DISCORD_TICKET_LOG_CHANNEL_ID", "STAFF_ALERT_CHANNEL_ID")
+
+	// Set only token, db, and point to our external IDs file
+	setEnv(t, "DISCORD_TOKEN", "test_bot_token")
+	setEnv(t, "DATABASE_URL", "postgres://test:pass@localhost:5432/db")
+	setEnv(t, "DISCORD_IDS_FILE", tmpFile.Name())
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("expected successful load from JSON file without env IDs, got error: %v", err)
+	}
+
+	if cfg.GuildID != "file_guild_123" {
+		t.Errorf("expected file_guild_123, got %s", cfg.GuildID)
+	}
+	if cfg.VerifiedRoleID != "file_verified_456" {
+		t.Errorf("expected file_verified_456, got %s", cfg.VerifiedRoleID)
+	}
+	if cfg.UnverifiedRoleID != "file_unverified_789" {
+		t.Errorf("expected file_unverified_789, got %s", cfg.UnverifiedRoleID)
+	}
+	if len(cfg.StaffRoleIDs) != 2 || cfg.StaffRoleIDs[0] != "file_staff_1" || cfg.StaffRoleIDs[1] != "file_staff_2" {
+		t.Errorf("unexpected staff roles from file: %v", cfg.StaffRoleIDs)
+	}
+	if cfg.TicketCategoryID != "file_ticket_cat_111" {
+		t.Errorf("expected file_ticket_cat_111, got %s", cfg.TicketCategoryID)
+	}
+	if cfg.TicketLogChannelID != "file_ticket_log_222" {
+		t.Errorf("expected file_ticket_log_222, got %s", cfg.TicketLogChannelID)
+	}
+	if cfg.StaffAlertChannelID != "file_staff_alert_333" {
+		t.Errorf("expected file_staff_alert_333, got %s", cfg.StaffAlertChannelID)
+	}
+	if cfg.IDsFilePath != tmpFile.Name() {
+		t.Errorf("expected IDsFilePath to be %s, got %s", tmpFile.Name(), cfg.IDsFilePath)
+	}
+}
+
 func TestConfig_ValidationErrors(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -137,7 +211,7 @@ func TestConfig_ValidationErrors(t *testing.T) {
 				StaffRoleIDs:     []string{"s"},
 				DatabaseURL:      "db",
 			},
-			wantErrMsg: "DISCORD_TOKEN is required",
+			wantErrMsg: "DISCORD_TOKEN is required in .env",
 		},
 		{
 			name: "Missing Guild ID",
@@ -149,7 +223,7 @@ func TestConfig_ValidationErrors(t *testing.T) {
 				StaffRoleIDs:     []string{"s"},
 				DatabaseURL:      "db",
 			},
-			wantErrMsg: "DISCORD_GUILD_ID is required",
+			wantErrMsg: "guild_id is required (specify in config/discord_ids.json or DISCORD_GUILD_ID)",
 		},
 		{
 			name: "Missing Verified Role ID",
@@ -161,7 +235,7 @@ func TestConfig_ValidationErrors(t *testing.T) {
 				StaffRoleIDs:     []string{"s"},
 				DatabaseURL:      "db",
 			},
-			wantErrMsg: "DISCORD_VERIFIED_ROLE_ID is required",
+			wantErrMsg: "verified_role_id is required (specify in config/discord_ids.json or DISCORD_VERIFIED_ROLE_ID)",
 		},
 		{
 			name: "Missing Unverified Role ID",
@@ -173,7 +247,7 @@ func TestConfig_ValidationErrors(t *testing.T) {
 				StaffRoleIDs:     []string{"s"},
 				DatabaseURL:      "db",
 			},
-			wantErrMsg: "DISCORD_UNVERIFIED_ROLE_ID is required",
+			wantErrMsg: "unverified_role_id is required (specify in config/discord_ids.json or DISCORD_UNVERIFIED_ROLE_ID)",
 		},
 		{
 			name: "Missing Staff Roles",
@@ -185,7 +259,7 @@ func TestConfig_ValidationErrors(t *testing.T) {
 				StaffRoleIDs:     []string{},
 				DatabaseURL:      "db",
 			},
-			wantErrMsg: "ALLOWED_VERIFIER_ROLE_IDS must contain at least one Staff or Server Helper role ID",
+			wantErrMsg: "staff_role_ids must contain at least one Staff or Server Helper role ID (specify in config/discord_ids.json or ALLOWED_VERIFIER_ROLE_IDS)",
 		},
 		{
 			name: "Missing Database URL",
@@ -197,7 +271,7 @@ func TestConfig_ValidationErrors(t *testing.T) {
 				StaffRoleIDs:     []string{"s"},
 				DatabaseURL:      "",
 			},
-			wantErrMsg: "database configuration (DATABASE_URL or DB_* vars) is required",
+			wantErrMsg: "database configuration (DATABASE_URL or DB_* vars) is required in .env",
 		},
 	}
 
@@ -213,4 +287,3 @@ func TestConfig_ValidationErrors(t *testing.T) {
 		})
 	}
 }
-

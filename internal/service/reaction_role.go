@@ -12,16 +12,18 @@ import (
 type ReactionRoleService struct {
 	rrRepo           domain.ReactionRoleRepository
 	verifyRepo       domain.VerificationRepository
+	auditRepo        domain.AuditRepository
 	assets           *storage.LocalAssetStore
 	staffRoleSet     map[string]struct{}
 	protectedRoleSet map[string]struct{}
 	logger           *slog.Logger
 }
 
-// NewReactionRoleService initializes the service with RBAC, protected role denylists, and local EC2 storage.
+// NewReactionRoleService initializes the service with RBAC, protected role denylists, audit logging, and local EC2 storage.
 func NewReactionRoleService(
 	rrRepo domain.ReactionRoleRepository,
 	verifyRepo domain.VerificationRepository,
+	auditRepo domain.AuditRepository,
 	assets *storage.LocalAssetStore,
 	staffRoleIDs []string,
 	verifiedRoleID string,
@@ -41,6 +43,7 @@ func NewReactionRoleService(
 	return &ReactionRoleService{
 		rrRepo:           rrRepo,
 		verifyRepo:       verifyRepo,
+		auditRepo:        auditRepo,
 		assets:           assets,
 		staffRoleSet:     staffSet,
 		protectedRoleSet: protectedSet,
@@ -56,7 +59,7 @@ func (s *ReactionRoleService) LoadPanelAssets(
 	bannerFilename, thumbFilename string,
 ) (banner *storage.AssetFile, thumb *storage.AssetFile, err error) {
 	if !s.isStaffOrHelper(actorRoles) {
-		_ = s.verifyRepo.LogAudit(ctx, actorID, bannerFilename, "UNAUTHORIZED_ASSET_READ_ATTEMPT")
+		s.logAudit(ctx, actorID, bannerFilename, "UNAUTHORIZED_ASSET_READ_ATTEMPT")
 		return nil, nil, domain.ErrUnauthorized
 	}
 
@@ -88,7 +91,7 @@ func (s *ReactionRoleService) SavePanelMetadata(
 		return domain.ErrInvalidInput
 	}
 	if !s.isStaffOrHelper(actorRoles) {
-		_ = s.verifyRepo.LogAudit(ctx, actorID, panel.MessageID, "UNAUTHORIZED_PANEL_SAVE_ATTEMPT")
+		s.logAudit(ctx, actorID, panel.MessageID, "UNAUTHORIZED_PANEL_SAVE_ATTEMPT")
 		return domain.ErrUnauthorized
 	}
 
@@ -105,7 +108,7 @@ func (s *ReactionRoleService) UpdatePanelImages(
 	clearImages bool,
 ) (*domain.ReactionPanel, *storage.AssetFile, *storage.AssetFile, error) {
 	if !s.isStaffOrHelper(actorRoles) {
-		_ = s.verifyRepo.LogAudit(ctx, actorID, messageID, "UNAUTHORIZED_PANEL_IMAGE_EDIT")
+		s.logAudit(ctx, actorID, messageID, "UNAUTHORIZED_PANEL_IMAGE_EDIT")
 		return nil, nil, nil, domain.ErrUnauthorized
 	}
 
@@ -148,7 +151,7 @@ func (s *ReactionRoleService) UpdatePanelImages(
 		return nil, nil, nil, err
 	}
 
-	_ = s.verifyRepo.LogAudit(ctx, actorID, messageID, "UPDATE_PANEL_IMAGES")
+	s.logAudit(ctx, actorID, messageID, "UPDATE_PANEL_IMAGES")
 	return panel, bannerAsset, thumbAsset, nil
 }
 
@@ -175,7 +178,7 @@ func (s *ReactionRoleService) CreateBinding(
 
 	// 1. Verify caller is Staff or Server Helper
 	if !s.isStaffOrHelper(actorRoles) {
-		_ = s.verifyRepo.LogAudit(ctx, actorID, rr.RoleID, "UNAUTHORIZED_REACTION_BIND_ATTEMPT")
+		s.logAudit(ctx, actorID, rr.RoleID, "UNAUTHORIZED_REACTION_BIND_ATTEMPT")
 		return domain.ErrUnauthorized
 	}
 
@@ -185,7 +188,7 @@ func (s *ReactionRoleService) CreateBinding(
 			"actor_id", actorID,
 			"role_id", rr.RoleID,
 		)
-		_ = s.verifyRepo.LogAudit(ctx, actorID, rr.RoleID, "BLOCKED_PROTECTED_ROLE_BIND")
+		s.logAudit(ctx, actorID, rr.RoleID, "BLOCKED_PROTECTED_ROLE_BIND")
 		return domain.ErrProtectedRole
 	}
 
@@ -271,14 +274,14 @@ func (s *ReactionRoleService) RemoveBinding(
 		return domain.ErrInvalidInput
 	}
 	if !s.isStaffOrHelper(actorRoles) {
-		_ = s.verifyRepo.LogAudit(ctx, actorID, messageID, "UNAUTHORIZED_REACTION_REMOVE_ATTEMPT")
+		s.logAudit(ctx, actorID, messageID, "UNAUTHORIZED_REACTION_REMOVE_ATTEMPT")
 		return domain.ErrUnauthorized
 	}
 
 	if err := s.rrRepo.DeleteMapping(ctx, guildID, messageID, emojiAPIName); err != nil {
 		return err
 	}
-	_ = s.verifyRepo.LogAudit(ctx, actorID, messageID, "REMOVE_REACTION_ROLE")
+	s.logAudit(ctx, actorID, messageID, "REMOVE_REACTION_ROLE")
 	return nil
 }
 
@@ -288,4 +291,10 @@ func (s *ReactionRoleService) ListMessageBindings(
 	guildID, messageID string,
 ) ([]*domain.ReactionRole, error) {
 	return s.rrRepo.ListByMessage(ctx, guildID, messageID)
+}
+
+func (s *ReactionRoleService) logAudit(ctx context.Context, actorID, targetID, action string) {
+	if s.auditRepo != nil {
+		_ = s.auditRepo.LogAudit(ctx, actorID, targetID, action)
+	}
 }

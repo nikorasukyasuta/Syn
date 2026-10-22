@@ -56,12 +56,20 @@ func (r *ReactionRoleRepo) UpsertMapping(ctx context.Context, rr *domain.Reactio
 }
 
 // GetMapping fetches a single reaction role configuration for a given message and emoji.
+// It supports exact matches as well as parsed custom emoji formats.
 func (r *ReactionRoleRepo) GetMapping(ctx context.Context, guildID, messageID, emojiAPIName string) (*domain.ReactionRole, error) {
 	const query = `
 		SELECT id, guild_id, channel_id, message_id, emoji_api_name, emoji_display,
 		       role_id, description, requires_verified, created_by_id, created_at
 		FROM reaction_roles
-		WHERE guild_id = $1 AND message_id = $2 AND emoji_api_name = $3
+		WHERE guild_id = $1 AND message_id = $2 AND (
+			emoji_api_name = $3 OR 
+			emoji_api_name = split_part($3, ':', 1) OR 
+			(split_part($3, ':', 2) != '' AND emoji_api_name = split_part($3, ':', 2)) OR
+			emoji_api_name = '<:' || $3 || '>' OR
+			emoji_api_name = '<a:' || $3 || '>'
+		)
+		LIMIT 1
 	`
 	var rr domain.ReactionRole
 	err := r.pool.QueryRow(ctx, query, guildID, messageID, emojiAPIName).Scan(
@@ -110,7 +118,16 @@ func (r *ReactionRoleRepo) ListByMessage(ctx context.Context, guildID, messageID
 
 // DeleteMapping removes a reaction role configuration from a message.
 func (r *ReactionRoleRepo) DeleteMapping(ctx context.Context, guildID, messageID, emojiAPIName string) error {
-	const query = `DELETE FROM reaction_roles WHERE guild_id = $1 AND message_id = $2 AND emoji_api_name = $3`
+	const query = `
+		DELETE FROM reaction_roles
+		WHERE guild_id = $1 AND message_id = $2 AND (
+			emoji_api_name = $3 OR 
+			emoji_api_name = split_part($3, ':', 1) OR 
+			(split_part($3, ':', 2) != '' AND emoji_api_name = split_part($3, ':', 2)) OR
+			emoji_api_name = '<:' || $3 || '>' OR
+			emoji_api_name = '<a:' || $3 || '>'
+		)
+	`
 	_, err := r.pool.Exec(ctx, query, guildID, messageID, emojiAPIName)
 	return err
 }

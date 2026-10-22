@@ -88,7 +88,7 @@ func Setup(cfg Config) (*slog.Logger, io.Closer, error) {
 		logger.Warn("file logger failed to initialize, continuing with console logging",
 			"error", fileInitErr,
 			"file_path", cfg.FilePath,
-			"hint", "ensure host logs directory is writable by UID 65532 (run: chmod 777 logs)",
+			"hint", "ensure host logs directory is writable (run: chmod 777 logs)",
 		)
 	}
 

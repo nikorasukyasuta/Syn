@@ -1,0 +1,17 @@
+{
+  "guild_id": "1560121676212207627",
+  "roles": {
+    "verified_role_id": "987654321098765432",
+    "unverified_role_id": "112233445566778899",
+    "staff_role_ids": [
+      "111111111111111111",
+      "222222222222222222"
+    ]
+  },
+  "channels": {
+    "ticket_category_id": "",
+    "ticket_log_channel_id": "",
+    "staff_alert_channel_id": ""
+  }
+}
+

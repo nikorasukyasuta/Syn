@@ -51,6 +51,7 @@ func main() {
 		"log_level", cfg.LogLevel,
 		"log_file", cfg.LogFilePath,
 		"guild_id", cfg.GuildID,
+		"ids_file", cfg.IDsFilePath,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -69,9 +70,10 @@ func main() {
 	logger.Info("postgresql connection pool established")
 
 	// 4. Wire Clean Architecture Layers (Repository -> Service -> Handlers/Cache -> Bot)
+	auditRepo := postgres.NewAuditRepo(dbPool)
 	verifyRepo := postgres.NewVerificationRepo(dbPool)
-	verifySvc := service.NewVerificationService(verifyRepo, cfg.StaffRoleIDs, logger)
-	verifyHandler := handlers.NewVerifyHandler(verifySvc, cfg.VerifiedRoleID, cfg.UnverifiedRoleID)
+	verifySvc := service.NewVerificationService(verifyRepo, auditRepo, cfg.StaffRoleIDs, logger)
+	verifyHandler := handlers.NewVerifyHandler(verifySvc, cfg.VerifiedRoleID, cfg.UnverifiedRoleID, logger)
 
 	assetStore, err := storage.NewLocalAssetStore(cfg.AssetsDir)
 	if err != nil {
@@ -80,7 +82,7 @@ func main() {
 	}
 
 	rrRepo := postgres.NewReactionRoleRepo(dbPool)
-	rrSvc := service.NewReactionRoleService(rrRepo, verifyRepo, assetStore, cfg.StaffRoleIDs, cfg.VerifiedRoleID, logger)
+	rrSvc := service.NewReactionRoleService(rrRepo, verifyRepo, auditRepo, assetStore, cfg.StaffRoleIDs, cfg.VerifiedRoleID, logger)
 	rrHandler := handlers.NewReactionRoleHandler(rrSvc, logger)
 
 	// Dynamic Resource Cache for roles and channels
@@ -89,7 +91,15 @@ func main() {
 	// Automatic Member Join Handler for granting unverified role
 	memberHandler := handlers.NewMemberJoinHandler(cfg.GuildID, cfg.UnverifiedRoleID, logger)
 
-	bot, err := discord.NewBot(cfg, logger, verifyHandler, rrHandler, memberHandler, resCache)
+	// Safeword / RED Alert Handler
+	safewordHandler := handlers.NewSafewordHandler(cfg, auditRepo, logger)
+
+	// Support & Verification Ticket System
+	ticketRepo := postgres.NewTicketRepo(dbPool)
+	ticketSvc := service.NewTicketService(ticketRepo, cfg.StaffRoleIDs, logger)
+	ticketHandler := handlers.NewTicketHandler(ticketSvc, cfg, resCache, logger)
+
+	bot, err := discord.NewBot(cfg, logger, verifyHandler, rrHandler, memberHandler, safewordHandler, ticketHandler, resCache)
 	if err != nil {
 		logger.Error("failed to initialize discord bot", "error", err)
 		os.Exit(1)
