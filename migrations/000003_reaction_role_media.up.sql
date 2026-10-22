@@ -12,4 +12,4 @@ CREATE TABLE
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW ()
     );
 
-CREATE INDEX idx_reaction_panels_guild ON reaction_panels (guild_id, channel_id);
+CREATE INDEX IF NOT EXISTS idx_reaction_panels_guild ON reaction_panels (guild_id, channel_id);

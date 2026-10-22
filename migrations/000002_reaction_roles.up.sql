@@ -13,5 +13,5 @@ CREATE TABLE IF NOT EXISTS reaction_roles (
     UNIQUE(message_id, emoji_api_name)
 );
 
-CREATE INDEX idx_reaction_roles_lookup ON reaction_roles(guild_id, message_id, emoji_api_name);
-CREATE INDEX idx_reaction_roles_message ON reaction_roles(guild_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_reaction_roles_lookup ON reaction_roles(guild_id, message_id, emoji_api_name);
+CREATE INDEX IF NOT EXISTS idx_reaction_roles_message ON reaction_roles(guild_id, message_id);

@@ -16,6 +16,7 @@ import (
 	"syn/internal/repository/postgres"
 	"syn/internal/service"
 	"syn/internal/storage"
+	"syn/migrations"
 )
 
 func main() {
@@ -68,6 +69,12 @@ func main() {
 	}
 	defer dbPool.Close()
 	logger.Info("postgresql connection pool established")
+
+	// Run embedded database schema migrations on startup
+	if err := migrations.Run(dbCtx, dbPool, logger); err != nil {
+		logger.Error("failed to apply database migrations", "error", err)
+		os.Exit(1)
+	}
 
 	// 4. Wire Clean Architecture Layers (Repository -> Service -> Handlers/Cache -> Bot)
 	auditRepo := postgres.NewAuditRepo(dbPool)
