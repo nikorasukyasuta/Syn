@@ -71,10 +71,3 @@ func (r *VerificationRepo) SaveVerification(ctx context.Context, v *domain.Verif
 		return nil
 	})
 }
-
-// LogAudit records standalone security or moderation events.
-func (r *VerificationRepo) LogAudit(ctx context.Context, actorID, targetID, action string) error {
-	const query = `INSERT INTO audit_logs (actor_id, target_id, action) VALUES ($1, $2, $3)`
-	_, err := r.pool.Exec(ctx, query, actorID, targetID, action)
-	return err
-}

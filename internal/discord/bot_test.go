@@ -29,7 +29,8 @@ func TestNewBot_Success(t *testing.T) {
 	memberHandler := handlers.NewMemberJoinHandler(cfg.GuildID, cfg.UnverifiedRoleID, silentLogger)
 	resCache := cache.NewResourceCache(silentLogger)
 
-	bot, err := NewBot(cfg, silentLogger, verifyHandler, rrHandler, memberHandler, resCache)
+	safewordHandler := handlers.NewSafewordHandler(cfg, nil, silentLogger)
+	bot, err := NewBot(cfg, silentLogger, verifyHandler, rrHandler, memberHandler, safewordHandler, resCache)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}
@@ -113,7 +114,7 @@ func TestBot_ResolveAppID(t *testing.T) {
 		StaffRoleIDs:     []string{"role_staff_1"},
 	}
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil)
+	bot, err := NewBot(cfg, silentLogger, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create bot: %v", err)
 	}

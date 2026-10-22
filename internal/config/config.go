@@ -14,8 +14,10 @@ type Config struct {
 	GuildID          string
 	VerifiedRoleID   string
 	UnverifiedRoleID string
-	StaffRoleIDs     []string // Holds both Staff and Server Helper Role IDs
-	DatabaseURL      string   // Full PostgreSQL connection string
+	StaffRoleIDs        []string // Holds both Staff and Server Helper Role IDs
+	StaffAlertChannelID string   // Optional: Channel to send staff notifications/safeword alerts
+	SafewordEmoji       string   // Optional: Reaction emoji that triggers RED (defaults to "🛑")
+	DatabaseURL         string   // Full PostgreSQL connection string
 	AssetsDir        string
 	LogLevel         string
 	LogFilePath      string
@@ -72,20 +74,27 @@ func Load() (*Config, error) {
 		logFormat = "json"
 	}
 
+	safewordEmoji := strings.TrimSpace(os.Getenv("SAFEWORD_EMOJI"))
+	if safewordEmoji == "" {
+		safewordEmoji = "🛑"
+	}
+
 	cfg := &Config{
-		DiscordToken:     os.Getenv("DISCORD_TOKEN"),
-		GuildID:          os.Getenv("DISCORD_GUILD_ID"),
-		VerifiedRoleID:   os.Getenv("DISCORD_VERIFIED_ROLE_ID"),
-		UnverifiedRoleID: os.Getenv("DISCORD_UNVERIFIED_ROLE_ID"),
-		StaffRoleIDs:     staffRoles,
-		DatabaseURL:      dbURL,
-		LogLevel:         os.Getenv("LOG_LEVEL"),
-		AssetsDir:        assetsDir,
-		LogFilePath:      logFilePath,
-		LogMaxSizeMB:     logMaxSize,
-		LogMaxBackups:    logMaxBackups,
-		LogMaxAgeDays:    logMaxAge,
-		LogFormat:        logFormat,
+		DiscordToken:        os.Getenv("DISCORD_TOKEN"),
+		GuildID:             os.Getenv("DISCORD_GUILD_ID"),
+		VerifiedRoleID:      os.Getenv("DISCORD_VERIFIED_ROLE_ID"),
+		UnverifiedRoleID:    os.Getenv("DISCORD_UNVERIFIED_ROLE_ID"),
+		StaffRoleIDs:        staffRoles,
+		StaffAlertChannelID: strings.TrimSpace(os.Getenv("STAFF_ALERT_CHANNEL_ID")),
+		SafewordEmoji:       safewordEmoji,
+		DatabaseURL:         dbURL,
+		LogLevel:            os.Getenv("LOG_LEVEL"),
+		AssetsDir:           assetsDir,
+		LogFilePath:         logFilePath,
+		LogMaxSizeMB:        logMaxSize,
+		LogMaxBackups:       logMaxBackups,
+		LogMaxAgeDays:       logMaxAge,
+		LogFormat:           logFormat,
 	}
 
 	if err := cfg.Validate(); err != nil {

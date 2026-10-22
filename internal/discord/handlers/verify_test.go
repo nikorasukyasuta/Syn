@@ -47,10 +47,6 @@ func (m *mockVerificationRepo) SaveVerification(_ context.Context, _ *domain.Ver
 	return m.saveErr
 }
 
-func (m *mockVerificationRepo) LogAudit(_ context.Context, _, _, _ string) error {
-	return nil
-}
-
 func TestVerifyCommandDefinition(t *testing.T) {
 	t.Parallel()
 
@@ -71,7 +67,7 @@ func TestVerifyHandler_HandleVerifyCommand_NoOptions(t *testing.T) {
 
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	vRepo := &mockVerificationRepo{}
-	vSvc := service.NewVerificationService(vRepo, []string{"role_staff"}, silentLogger)
+	vSvc := service.NewVerificationService(vRepo, nil, []string{"role_staff"}, silentLogger)
 	h := handlers.NewVerifyHandler(vSvc, "role_verified", "role_unverified")
 
 	session := newMockSession(http.StatusOK, `{}`)
@@ -94,7 +90,7 @@ func TestVerifyHandler_HandleVerifyCommand_Success(t *testing.T) {
 
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	vRepo := &mockVerificationRepo{}
-	vSvc := service.NewVerificationService(vRepo, []string{"role_staff"}, silentLogger)
+	vSvc := service.NewVerificationService(vRepo, nil, []string{"role_staff"}, silentLogger)
 	h := handlers.NewVerifyHandler(vSvc, "role_verified", "role_unverified")
 
 	session := newMockSession(http.StatusOK, `{}`)
@@ -133,7 +129,7 @@ func TestVerifyHandler_HandleVerifyCommand_ServiceError(t *testing.T) {
 
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	vRepo := &mockVerificationRepo{saveErr: errors.New("db error")}
-	vSvc := service.NewVerificationService(vRepo, []string{"role_staff"}, silentLogger)
+	vSvc := service.NewVerificationService(vRepo, nil, []string{"role_staff"}, silentLogger)
 	h := handlers.NewVerifyHandler(vSvc, "role_verified", "role_unverified")
 
 	session := newMockSession(http.StatusOK, `{}`)
@@ -172,7 +168,7 @@ func TestVerifyHandler_HandleVerifyCommand_ReplacesUnverifiedRole(t *testing.T) 
 
 	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	vRepo := &mockVerificationRepo{}
-	vSvc := service.NewVerificationService(vRepo, []string{"role_staff"}, silentLogger)
+	vSvc := service.NewVerificationService(vRepo, nil, []string{"role_staff"}, silentLogger)
 	h := handlers.NewVerifyHandler(vSvc, "role_verified", "role_unverified", silentLogger)
 
 	session := newMockSession(http.StatusOK, `{}`)
@@ -218,7 +214,7 @@ func TestVerifyHandler_HandleVerifyCommand_AlreadyVerifiedSyncsRoles(t *testing.
 			IsVerified:    true,
 		},
 	}
-	vSvc := service.NewVerificationService(vRepo, []string{"role_staff"}, silentLogger)
+	vSvc := service.NewVerificationService(vRepo, nil, []string{"role_staff"}, silentLogger)
 	h := handlers.NewVerifyHandler(vSvc, "role_verified", "role_unverified", silentLogger)
 
 	session := newMockSession(http.StatusOK, `{}`)

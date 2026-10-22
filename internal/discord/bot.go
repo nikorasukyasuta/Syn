@@ -20,9 +20,10 @@ type Bot struct {
 	logger         *slog.Logger
 	routes         map[string]InteractionHandlerFunc
 	registeredCmds []*discordgo.ApplicationCommand
-	rrHandler      *handlers.ReactionRoleHandler
-	memberHandler  *handlers.MemberJoinHandler
-	cache          *cache.ResourceCache
+	rrHandler       *handlers.ReactionRoleHandler
+	memberHandler   *handlers.MemberJoinHandler
+	safewordHandler *handlers.SafewordHandler
+	cache           *cache.ResourceCache
 }
 
 // NewBot creates and configures a new Discord Bot instance with security intents,
@@ -33,6 +34,7 @@ func NewBot(
 	verifyHandler *handlers.VerifyHandler,
 	rrHandler *handlers.ReactionRoleHandler,
 	memberHandler *handlers.MemberJoinHandler,
+	safewordHandler *handlers.SafewordHandler,
 	resCache *cache.ResourceCache,
 ) (*Bot, error) {
 	session, err := discordgo.New("Bot " + cfg.DiscordToken)
@@ -46,13 +48,14 @@ func NewBot(
 		discordgo.IntentsGuildMessageReactions
 
 	b := &Bot{
-		session:       session,
-		cfg:           cfg,
-		logger:        logger,
-		routes:        make(map[string]InteractionHandlerFunc),
-		rrHandler:     rrHandler,
-		memberHandler: memberHandler,
-		cache:         resCache,
+		session:         session,
+		cfg:             cfg,
+		logger:          logger,
+		routes:          make(map[string]InteractionHandlerFunc),
+		rrHandler:       rrHandler,
+		memberHandler:   memberHandler,
+		safewordHandler: safewordHandler,
+		cache:           resCache,
 	}
 
 	// 1. Register /verify-member (Staff & Server Helpers Only)
@@ -76,6 +79,22 @@ func NewBot(
 	// 3. Bind Automatic Member Join Handler (assigns Unverified role)
 	if memberHandler != nil {
 		session.AddHandler(memberHandler.HandleGuildMemberAdd)
+	}
+
+	// 4. Register Safeword / RED Alert Handlers
+	if safewordHandler != nil {
+		// /red is public to ALL server members
+		b.RegisterCommand(
+			handlers.RedCommandDefinition(),
+			RecoverPanic(logger, safewordHandler.HandleRedCommand),
+		)
+		// /clear-slowmode is Staff & Server Helpers Only
+		b.RegisterCommand(
+			handlers.ClearSlowmodeCommandDefinition(),
+			RecoverPanic(logger, RequireRoles(cfg.StaffRoleIDs, logger, safewordHandler.HandleClearSlowmodeCommand)),
+		)
+		// Listen for 🛑 reaction trigger on any message
+		session.AddHandler(safewordHandler.HandleReactionAdd)
 	}
 
 	// 4. Bind Real-time Resource Cache Listeners (dynamically syncs Role & Channel mutations)
