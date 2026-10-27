@@ -12,6 +12,14 @@
     "ticket_category_id": "",
     "ticket_log_channel_id": "",
     "staff_alert_channel_id": ""
+  },
+  "settings": {
+    "safeword_emoji": "🛑",
+    "log_level": "INFO",
+    "log_file_path": "logs/syn.log",
+    "metrics_log_path": "logs/metrics.jsonl",
+    "metrics_sample_interval_sec": 15,
+    "metrics_flush_interval_sec": 60,
+    "web_port": "8080"
   }
 }
-

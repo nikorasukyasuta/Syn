@@ -41,4 +41,6 @@ COPY --from=builder /build/config /app/config
 # Copy the compiled binary from the builder stage
 COPY --from=builder /build/syn /app/syn
 
+EXPOSE 8080
+
 ENTRYPOINT ["/app/syn"]

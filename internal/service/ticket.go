@@ -13,17 +13,22 @@ import (
 // TicketService coordinates business rules, RBAC checks, and persistence for support tickets.
 type TicketService struct {
 	repo         domain.TicketRepository
+	panelRepo    domain.TicketPanelRepository
 	staffRoleIDs []string
 	logger       *slog.Logger
 }
 
 // NewTicketService constructs a new TicketService.
 func NewTicketService(repo domain.TicketRepository, staffRoleIDs []string, logger *slog.Logger) *TicketService {
-	return &TicketService{
+	svc := &TicketService{
 		repo:         repo,
 		staffRoleIDs: staffRoleIDs,
 		logger:       logger,
 	}
+	if pr, ok := repo.(domain.TicketPanelRepository); ok {
+		svc.panelRepo = pr
+	}
+	return svc
 }
 
 // CheckCanOpen validates that the ticket type is valid and that the user does not
@@ -32,6 +37,11 @@ func NewTicketService(repo domain.TicketRepository, staffRoleIDs []string, logge
 func (s *TicketService) CheckCanOpen(ctx context.Context, guildID, creatorID string, ticketType domain.TicketType) (*domain.Ticket, error) {
 	if !ticketType.IsValid() {
 		return nil, domain.ErrInvalidTicketType
+	}
+
+	// Filter violation tickets can always be opened even if an earlier violation ticket is active
+	if ticketType == domain.TicketTypeFilteredWords {
+		return nil, nil
 	}
 
 	existing, err := s.repo.GetActiveTicket(ctx, guildID, creatorID, ticketType)
@@ -161,4 +171,3 @@ func (s *TicketService) IsStaff(roles []string) bool {
 	}
 	return false
 }
-

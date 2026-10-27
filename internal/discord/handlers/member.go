@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+
+	"syn/internal/discord/syncutil"
 )
 
 // MemberJoinHandler automatically assigns the configured Unverified role
@@ -14,6 +16,7 @@ import (
 type MemberJoinHandler struct {
 	guildID          string
 	unverifiedRoleID string
+	lockMgr          *syncutil.UserLockManager
 	logger           *slog.Logger
 }
 
@@ -26,10 +29,20 @@ func NewMemberJoinHandler(guildID, unverifiedRoleID string, logger *slog.Logger)
 	}
 }
 
+// SetLockManager attaches a UserLockManager for serializing concurrent member operations.
+func (h *MemberJoinHandler) SetLockManager(lm *syncutil.UserLockManager) {
+	h.lockMgr = lm
+}
+
 // HandleGuildMemberAdd receives Discord's GUILD_MEMBER_ADD event and grants the unverified role.
 func (h *MemberJoinHandler) HandleGuildMemberAdd(s *discordgo.Session, m *discordgo.GuildMemberAdd) {
 	if m == nil || m.Member == nil || m.User == nil {
 		return
+	}
+
+	if h.lockMgr != nil {
+		unlock := h.lockMgr.Lock(m.User.ID)
+		defer unlock()
 	}
 
 	guildID := strings.TrimSpace(m.GuildID)

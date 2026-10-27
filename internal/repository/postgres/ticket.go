@@ -14,7 +14,7 @@ import (
 	"syn/internal/domain"
 )
 
-// TicketRepo implements domain.TicketRepository backed by PostgreSQL.
+// TicketRepo implements domain.TicketRepository and domain.TicketPanelRepository backed by PostgreSQL.
 type TicketRepo struct {
 	pool *pgxpool.Pool
 }
@@ -224,4 +224,3 @@ func (r *TicketRepo) ListOpenTicketsByCreator(ctx context.Context, guildID, crea
 
 	return tickets, rows.Err()
 }
-

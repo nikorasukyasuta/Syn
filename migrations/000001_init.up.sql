@@ -22,5 +22,5 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_verifications_guild ON member_verifications(guild_id);
-CREATE INDEX idx_audit_logs_target ON audit_logs(target_id);
+CREATE INDEX IF NOT EXISTS idx_verifications_guild ON member_verifications(guild_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_target ON audit_logs(target_id);

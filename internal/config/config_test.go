@@ -97,6 +97,12 @@ func TestConfig_Load_SuccessWithDatabaseURL(t *testing.T) {
 	if cfg.LogMaxSizeMB != 20 || cfg.LogMaxBackups != 10 || cfg.LogMaxAgeDays != 60 || cfg.LogFormat != "text" {
 		t.Errorf("unexpected log rotation settings: %+v", cfg)
 	}
+	if cfg.WebPort != "8080" {
+		t.Errorf("expected default web port 8080, got %s", cfg.WebPort)
+	}
+	if cfg.WebBaseURL != "http://localhost:8080" {
+		t.Errorf("expected default web base URL http://localhost:8080, got %s", cfg.WebBaseURL)
+	}
 }
 
 func TestConfig_Load_ConstructDatabaseURL(t *testing.T) {
@@ -285,5 +291,31 @@ func TestConfig_ValidationErrors(t *testing.T) {
 				t.Fatalf("expected error %q, got %q", tc.wantErrMsg, err.Error())
 			}
 		})
+	}
+}
+
+func TestConfig_Load_WebCustomSettings(t *testing.T) {
+	clearEnv(t, "DISCORD_TOKEN", "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DATABASE_URL", "WEB_PORT", "WEB_BASE_URL", "DISCORD_IDS_FILE")
+
+	setEnv(t, "DISCORD_IDS_FILE", "/non_existent_test_ids.json")
+	setEnv(t, "DISCORD_TOKEN", "token_123")
+	setEnv(t, "DISCORD_GUILD_ID", "guild_456")
+	setEnv(t, "DISCORD_VERIFIED_ROLE_ID", "role_789")
+	setEnv(t, "DISCORD_UNVERIFIED_ROLE_ID", "role_unverified_000")
+	setEnv(t, "ALLOWED_VERIFIER_ROLE_IDS", "role_staff")
+	setEnv(t, "DATABASE_URL", "postgres://user:pass@localhost:5432/db?sslmode=disable")
+	setEnv(t, "WEB_PORT", "9090")
+	setEnv(t, "WEB_BASE_URL", "https://syn.example.com/")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.WebPort != "9090" {
+		t.Errorf("expected WebPort 9090, got %s", cfg.WebPort)
+	}
+	if cfg.WebBaseURL != "https://syn.example.com" {
+		t.Errorf("expected WebBaseURL 'https://syn.example.com', got %s", cfg.WebBaseURL)
 	}
 }

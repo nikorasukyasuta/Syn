@@ -35,11 +35,14 @@ assets/panels/*
 !assets/panels/README.md
 !assets/panels/.gitkeep
 
-# Database Storage & Local Mounts
+# Database Storage, Backups, & Local Mounts
 pgdata/
+backups/
+docker-compose.override.yml
 *.db
 *.sqlite
 *.sqlite3
+*.sql.gz
 
 # IDE & Editor Artifacts
 .vscode/

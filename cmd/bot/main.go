@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -12,13 +13,22 @@ import (
 	"syn/internal/discord"
 	"syn/internal/discord/cache"
 	"syn/internal/discord/handlers"
+	"syn/internal/discord/queue"
+	"syn/internal/discord/syncutil"
 	"syn/internal/logging"
 	"syn/internal/repository/postgres"
 	"syn/internal/service"
 	"syn/internal/storage"
+	"syn/internal/telemetry"
+	"syn/internal/web"
+	"syn/migrations"
 )
 
 func main() {
+	// 0. Maximize Go runtime concurrency across all available CPU cores (EC2 2-Core Instance)
+	numCPUs := runtime.NumCPU()
+	runtime.GOMAXPROCS(numCPUs)
+
 	// 1. Load and validate configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -69,11 +79,28 @@ func main() {
 	defer dbPool.Close()
 	logger.Info("postgresql connection pool established")
 
+	// Run embedded database schema migrations on startup
+	if err := migrations.Run(dbCtx, dbPool, logger); err != nil {
+		logger.Error("failed to apply database migrations", "error", err)
+		os.Exit(1)
+	}
+
 	// 4. Wire Clean Architecture Layers (Repository -> Service -> Handlers/Cache -> Bot)
 	auditRepo := postgres.NewAuditRepo(dbPool)
 	verifyRepo := postgres.NewVerificationRepo(dbPool)
+
+	// Fine-grained per-user lock manager to serialize concurrent state/role changes per user
+	lockMgr := syncutil.NewUserLockManager()
+
+	// High-throughput asynchronous command queue (worker pool sized to match host cores)
+	workerCount := numCPUs * 2
+	if workerCount < 4 {
+		workerCount = 4
+	}
+	cmdQueue := queue.NewCommandQueue(1024, workerCount, logger)
+
 	verifySvc := service.NewVerificationService(verifyRepo, auditRepo, cfg.StaffRoleIDs, logger)
-	verifyHandler := handlers.NewVerifyHandler(verifySvc, cfg.VerifiedRoleID, cfg.UnverifiedRoleID, logger)
+	verifyHandler := handlers.NewVerifyHandler(verifySvc, cfg.VerifiedRoleID, cfg.UnverifiedRoleID, lockMgr, logger)
 
 	assetStore, err := storage.NewLocalAssetStore(cfg.AssetsDir)
 	if err != nil {
@@ -84,12 +111,14 @@ func main() {
 	rrRepo := postgres.NewReactionRoleRepo(dbPool)
 	rrSvc := service.NewReactionRoleService(rrRepo, verifyRepo, auditRepo, assetStore, cfg.StaffRoleIDs, cfg.VerifiedRoleID, logger)
 	rrHandler := handlers.NewReactionRoleHandler(rrSvc, logger)
+	rrHandler.SetLockManager(lockMgr)
 
 	// Dynamic Resource Cache for roles and channels
 	resCache := cache.NewResourceCache(logger)
 
 	// Automatic Member Join Handler for granting unverified role
 	memberHandler := handlers.NewMemberJoinHandler(cfg.GuildID, cfg.UnverifiedRoleID, logger)
+	memberHandler.SetLockManager(lockMgr)
 
 	// Safeword / RED Alert Handler
 	safewordHandler := handlers.NewSafewordHandler(cfg, auditRepo, logger)
@@ -99,17 +128,107 @@ func main() {
 	ticketSvc := service.NewTicketService(ticketRepo, cfg.StaffRoleIDs, logger)
 	ticketHandler := handlers.NewTicketHandler(ticketSvc, cfg, resCache, logger)
 
-	bot, err := discord.NewBot(cfg, logger, verifyHandler, rrHandler, memberHandler, safewordHandler, ticketHandler, resCache)
+	// Health and Infrastructure Diagnostics Handler (Public nominal, Staff deep diagnostics)
+	healthHandler := handlers.NewHealthHandler(cfg.StaffRoleIDs, dbPool, cmdQueue, lockMgr)
+
+	// System Resource Telemetry Cache & Periodic JSONL Metrics Flusher (for graphing & monitoring)
+	telemetryMonitor, err := telemetry.NewMonitor(
+		telemetry.Config{
+			FilePath:       cfg.MetricsLogPath,
+			SampleInterval: time.Duration(cfg.MetricsSampleIntervalSec) * time.Second,
+			FlushInterval:  time.Duration(cfg.MetricsFlushIntervalSec) * time.Second,
+		},
+		telemetry.NewPGXPoolStatsProvider(dbPool),
+		telemetry.NewCommandQueueStatsProvider(cmdQueue),
+		lockMgr,
+		logger,
+	)
+	if err != nil {
+		logger.Warn("failed to initialize system resource telemetry monitor; continuing without file flush", "error", err)
+	} else {
+		telemetryMonitor.Start()
+		healthHandler.SetTelemetryMonitor(telemetryMonitor)
+	}
+
+	// Bot Versioning and GitHub Source Tracking Handler
+	versionHandler := handlers.NewVersionHandler()
+
+	// Automated Word Filter and Moderation Warnings
+	warningRepo := postgres.NewWarningRepo(dbPool)
+	filterSvc := service.NewWordFilterService(warningRepo, cfg.StaffRoleIDs, logger)
+	if err := filterSvc.LoadAll(cfg.FiltersDir); err != nil {
+		logger.Warn("filter service initial load completed with warning", "error", err, "dir", cfg.FiltersDir)
+	}
+	filterHandler := handlers.NewFilterHandler(filterSvc, ticketSvc, cfg, resCache, logger)
+
+	// Flash and Dash Ephemeral Photo Channels
+	flashRepo := postgres.NewFlashRepo(dbPool)
+	flashSvc := service.NewFlashDashService(flashRepo, cfg.StaffRoleIDs, logger)
+	flashHandler := handlers.NewFlashHandler(flashSvc, cfg, logger)
+
+	// Legal and Privacy Command Handlers
+	legalHandler := handlers.NewLegalHandler(cfg)
+
+	// Dedicated 18+ ID Verification Flow (Staff-Gated Commands + User Panel)
+	idVerifyRepo := postgres.NewIDVerificationRepo(dbPool)
+	idVerifySvc := service.NewIDVerificationService(idVerifyRepo, verifyRepo, auditRepo, cfg.StaffRoleIDs, logger)
+	idVerifyHandler := handlers.NewIDVerifyHandler(idVerifySvc, cfg, resCache, lockMgr, logger)
+
+	// Public Web Server for Terms, Privacy Policy, Health, and Time-Series Metrics
+	webServer := web.NewServer(cfg.WebPort, logger)
+	if telemetryMonitor != nil {
+		webServer.SetTelemetryMonitor(telemetryMonitor)
+	}
+	go func() {
+		if err := webServer.Start(); err != nil {
+			logger.Error("web server stopped with error", "error", err)
+		}
+	}()
+
+	bot, err := discord.NewBot(
+		cfg,
+		logger,
+		verifyHandler,
+		rrHandler,
+		memberHandler,
+		safewordHandler,
+		ticketHandler,
+		healthHandler,
+		versionHandler,
+		filterHandler,
+		flashHandler,
+		legalHandler,
+		cmdQueue,
+		lockMgr,
+		resCache,
+	)
 	if err != nil {
 		logger.Error("failed to initialize discord bot", "error", err)
 		os.Exit(1)
 	}
+	bot.SetIDVerifyHandler(idVerifyHandler)
 
 	// 5. Start the Bot
 	if err := bot.Start(); err != nil {
 		logger.Error("failed to start discord bot", "error", err)
 		os.Exit(1)
 	}
+
+	// Initialize Flash and Dash service (warm load channels and resume pending deletion timers)
+	if err := flashSvc.Init(ctx, bot.Session(), cfg.GuildID); err != nil {
+		logger.Warn("failed to initialize flash and dash service", "error", err)
+	}
+
+	// Automatically provision or sync the read-only Ticket Creation Hub channel and its per-type posts
+	go func() {
+		hubCtx, hubCancel := context.WithTimeout(ctx, 15*time.Second)
+		defer hubCancel()
+		if hubChID, err := ticketHandler.EnsureTicketHub(hubCtx, bot.Session(), cfg.GuildID); err != nil {
+			logger.Warn("failed to auto-sync ticket creation hub on startup", "error", err)
+		} else {
+			logger.Info("ticket creation hub synchronized", "channel_id", hubChID)
+		}
+	}()
 
 	// 6. Block until OS termination signal (Docker stop / EC2 reboot)
 	stopChan := make(chan os.Signal, 1)
@@ -118,9 +237,19 @@ func main() {
 
 	logger.Info("received shutdown signal, initiating graceful shutdown", "signal", sig.String())
 
-	// Allow up to 10 seconds for in-flight database transactions to complete
+	// Allow up to 10 seconds for in-flight database transactions and web requests to complete
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
+
+	if telemetryMonitor != nil {
+		if err := telemetryMonitor.Stop(); err != nil {
+			logger.ErrorContext(shutdownCtx, "error stopping telemetry monitor", "error", err)
+		}
+	}
+
+	if err := webServer.Shutdown(shutdownCtx); err != nil {
+		logger.ErrorContext(shutdownCtx, "error shutting down web server", "error", err)
+	}
 
 	if err := bot.Stop(); err != nil {
 		logger.ErrorContext(shutdownCtx, "error closing discord session", "error", err)

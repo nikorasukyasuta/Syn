@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
 	"syn/internal/discord"
+	"syn/internal/discord/ratelimit"
 )
 
 type mockRoundTripper func(req *http.Request) (*http.Response, error)
@@ -187,4 +189,69 @@ func TestRecoverPanic(t *testing.T) {
 
 	// Must not bubble panic to caller
 	handler(session, interaction)
+}
+
+func TestRateLimitMiddleware(t *testing.T) {
+	t.Parallel()
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	session := newMockSession()
+	limiter := ratelimit.NewUserRateLimiter(2, time.Minute, 0)
+	defer limiter.Stop()
+
+	staffRoles := []string{"role_staff"}
+	exemptCmds := []string{"red"}
+
+	callCount := 0
+	handler := discord.RateLimit(limiter, staffRoles, exemptCmds, silentLogger, func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		callCount++
+	})
+
+	makeInteraction := func(userID string, roles []string, cmdName string) *discordgo.InteractionCreate {
+		return &discordgo.InteractionCreate{
+			Interaction: &discordgo.Interaction{
+				ID:      "int_rl",
+				Token:   "tok_rl",
+				Type:    discordgo.InteractionApplicationCommand,
+				GuildID: "guild_123",
+				Member: &discordgo.Member{
+					User:  &discordgo.User{ID: userID},
+					Roles: roles,
+				},
+				Data: discordgo.ApplicationCommandInteractionData{
+					Name: cmdName,
+				},
+			},
+		}
+	}
+
+	// 1. Regular user: 1st command allowed
+	handler(session, makeInteraction("user_1", []string{"member"}, "ticket"))
+	if callCount != 1 {
+		t.Fatalf("expected 1 call, got %d", callCount)
+	}
+
+	// 2. Regular user: 2nd command allowed (burst 2)
+	handler(session, makeInteraction("user_1", []string{"member"}, "ticket"))
+	if callCount != 2 {
+		t.Fatalf("expected 2 calls, got %d", callCount)
+	}
+
+	// 3. Regular user: 3rd command rate limited!
+	handler(session, makeInteraction("user_1", []string{"member"}, "ticket"))
+	if callCount != 2 {
+		t.Fatalf("expected rate limited call to NOT invoke handler, got %d calls", callCount)
+	}
+
+	// 4. Staff user: always allowed (bypasses rate limit)
+	handler(session, makeInteraction("user_1", []string{"role_staff"}, "ticket"))
+	if callCount != 3 {
+		t.Fatalf("expected staff bypass to invoke handler, got %d calls", callCount)
+	}
+
+	// 5. Exempt command (red): always allowed even for regular user
+	handler(session, makeInteraction("user_1", []string{"member"}, "red"))
+	if callCount != 4 {
+		t.Fatalf("expected exempt command 'red' to invoke handler, got %d calls", callCount)
+	}
 }

@@ -11,19 +11,31 @@ import (
 	"syn/internal/config"
 	"syn/internal/discord/cache"
 	"syn/internal/discord/handlers"
+	"syn/internal/discord/queue"
+	"syn/internal/discord/ratelimit"
+	"syn/internal/discord/syncutil"
 )
 
 // Bot encapsulates the Discord session, command router, resource cache, and lifecycle management.
 type Bot struct {
-	session        *discordgo.Session
-	cfg            *config.Config
-	logger         *slog.Logger
-	routes         map[string]InteractionHandlerFunc
+	session         *discordgo.Session
+	cfg             *config.Config
+	logger          *slog.Logger
+	routes          map[string]InteractionHandlerFunc
 	registeredCmds  []*discordgo.ApplicationCommand
 	rrHandler       *handlers.ReactionRoleHandler
 	memberHandler   *handlers.MemberJoinHandler
 	safewordHandler *handlers.SafewordHandler
 	ticketHandler   *handlers.TicketHandler
+	healthHandler   *handlers.HealthHandler
+	versionHandler  *handlers.VersionHandler
+	filterHandler   *handlers.FilterHandler
+	flashHandler    *handlers.FlashHandler
+	legalHandler    *handlers.LegalHandler
+	idVerifyHandler *handlers.IDVerifyHandler
+	cmdQueue        *queue.CommandQueue
+	lockMgr         *syncutil.UserLockManager
+	rateLimiter     *ratelimit.UserRateLimiter
 	cache           *cache.ResourceCache
 }
 
@@ -37,6 +49,13 @@ func NewBot(
 	memberHandler *handlers.MemberJoinHandler,
 	safewordHandler *handlers.SafewordHandler,
 	ticketHandler *handlers.TicketHandler,
+	healthHandler *handlers.HealthHandler,
+	versionHandler *handlers.VersionHandler,
+	filterHandler *handlers.FilterHandler,
+	flashHandler *handlers.FlashHandler,
+	legalHandler *handlers.LegalHandler,
+	cmdQueue *queue.CommandQueue,
+	lockMgr *syncutil.UserLockManager,
 	resCache *cache.ResourceCache,
 ) (*Bot, error) {
 	session, err := discordgo.New("Bot " + cfg.DiscordToken)
@@ -44,10 +63,19 @@ func NewBot(
 		return nil, fmt.Errorf("creating discord session: %w", err)
 	}
 
-	// IntentsGuildMessageReactions allows receiving reaction events without reading message content.
+	// Configure HTTP client timeouts and retry backoff to avoid hanging connections
+	session.Client.Timeout = 15 * time.Second
+	session.MaxRestRetries = 3
+
+	// Subscribe to Guilds, Members, Reactions, and Message Content for Word Filtering
 	session.Identify.Intents = discordgo.IntentsGuilds |
 		discordgo.IntentsGuildMembers |
-		discordgo.IntentsGuildMessageReactions
+		discordgo.IntentsGuildMessageReactions |
+		discordgo.IntentsGuildMessages |
+		discordgo.IntentsMessageContent
+
+	// In-memory token bucket rate limiter: burst of 5 commands, refilling 1 per second
+	rateLimiter := ratelimit.NewUserRateLimiter(5, time.Second, 5*time.Minute)
 
 	b := &Bot{
 		session:         session,
@@ -58,6 +86,14 @@ func NewBot(
 		memberHandler:   memberHandler,
 		safewordHandler: safewordHandler,
 		ticketHandler:   ticketHandler,
+		healthHandler:   healthHandler,
+		versionHandler:  versionHandler,
+		filterHandler:   filterHandler,
+		flashHandler:    flashHandler,
+		legalHandler:    legalHandler,
+		cmdQueue:        cmdQueue,
+		lockMgr:         lockMgr,
+		rateLimiter:     rateLimiter,
 		cache:           resCache,
 	}
 
@@ -65,7 +101,7 @@ func NewBot(
 	if verifyHandler != nil {
 		b.RegisterCommand(
 			handlers.VerifyCommandDefinition(),
-			RecoverPanic(logger, RequireRoles(cfg.StaffRoleIDs, logger, verifyHandler.HandleVerifyCommand)),
+			b.wrapHandler(verifyHandler.HandleVerifyCommand, true, false),
 		)
 	}
 
@@ -73,7 +109,7 @@ func NewBot(
 	if rrHandler != nil {
 		b.RegisterCommand(
 			handlers.ReactionRoleCommandDefinition(),
-			RecoverPanic(logger, RequireRoles(cfg.StaffRoleIDs, logger, rrHandler.HandlePanelCommand)),
+			b.wrapHandler(rrHandler.HandlePanelCommand, true, false),
 		)
 		session.AddHandler(rrHandler.HandleReactionAdd)
 		session.AddHandler(rrHandler.HandleReactionRemove)
@@ -86,15 +122,15 @@ func NewBot(
 
 	// 4. Register Safeword / RED Alert Handlers
 	if safewordHandler != nil {
-		// /red is public to ALL server members
+		// /red is public to ALL server members and exempt from command rate limiting
 		b.RegisterCommand(
 			handlers.RedCommandDefinition(),
-			RecoverPanic(logger, safewordHandler.HandleRedCommand),
+			b.wrapHandler(safewordHandler.HandleRedCommand, false, true),
 		)
 		// /clear-slowmode is Staff & Server Helpers Only
 		b.RegisterCommand(
 			handlers.ClearSlowmodeCommandDefinition(),
-			RecoverPanic(logger, RequireRoles(cfg.StaffRoleIDs, logger, safewordHandler.HandleClearSlowmodeCommand)),
+			b.wrapHandler(safewordHandler.HandleClearSlowmodeCommand, true, false),
 		)
 		// Listen for 🛑 reaction trigger on any message
 		session.AddHandler(safewordHandler.HandleReactionAdd)
@@ -104,11 +140,61 @@ func NewBot(
 	if ticketHandler != nil {
 		b.RegisterCommand(
 			handlers.TicketCommandDefinition(),
-			RecoverPanic(logger, ticketHandler.HandleTicketCommand),
+			b.wrapHandler(ticketHandler.HandleTicketCommand, false, false),
 		)
 	}
 
-	// 6. Bind Real-time Resource Cache Listeners (dynamically syncs Role & Channel mutations)
+	// 6. Register /health (Public nominal status; Staff full infrastructure diagnostics)
+	if healthHandler != nil {
+		b.RegisterCommand(
+			handlers.HealthCommandDefinition(),
+			b.wrapHandler(healthHandler.HandleHealthCommand, false, false),
+		)
+	}
+
+	// 7. Register /version (Public bot version, update changelog, and GitHub source link)
+	if versionHandler != nil {
+		b.RegisterCommand(
+			handlers.VersionCommandDefinition(),
+			b.wrapHandler(versionHandler.HandleVersionCommand, false, false),
+		)
+	}
+
+	// 8. Register Word Filter and Moderation Warnings Handlers
+	if filterHandler != nil {
+		b.RegisterCommand(
+			handlers.FilterCommandDefinition(),
+			b.wrapHandler(filterHandler.HandleFilterCommand, true, false),
+		)
+		b.RegisterCommand(
+			handlers.WarningsCommandDefinition(),
+			b.wrapHandler(filterHandler.HandleWarningsCommand, true, false),
+		)
+		session.AddHandler(filterHandler.HandleMessageCreate)
+	}
+
+	// 9. Register Flash & Dash Photo Channels (Staff for config; public message interceptor)
+	if flashHandler != nil {
+		b.RegisterCommand(
+			handlers.FlashCommandDefinition(),
+			b.wrapHandler(flashHandler.HandleFlashCommand, true, false),
+		)
+		session.AddHandler(flashHandler.HandleMessageCreate)
+	}
+
+	// 10. Register Legal & Privacy Slash Commands (Public Ephemeral)
+	if legalHandler != nil {
+		b.RegisterCommand(
+			handlers.TermsCommandDefinition(),
+			b.wrapHandler(legalHandler.HandleTermsCommand, false, false),
+		)
+		b.RegisterCommand(
+			handlers.PrivacyCommandDefinition(),
+			b.wrapHandler(legalHandler.HandlePrivacyCommand, false, false),
+		)
+	}
+
+	// 11. Bind Real-time Resource Cache Listeners (dynamically syncs Role & Channel mutations)
 	if resCache != nil {
 		session.AddHandler(resCache.HandleGuildRoleCreate)
 		session.AddHandler(resCache.HandleGuildRoleUpdate)
@@ -118,7 +204,7 @@ func NewBot(
 		session.AddHandler(resCache.HandleChannelDelete)
 	}
 
-	// 5. Slash Command Router & Lifecycle Events
+	// 7. Slash Command Router & Lifecycle Events
 	session.AddHandler(b.handleInteraction)
 
 	session.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
@@ -133,10 +219,27 @@ func (b *Bot) Cache() *cache.ResourceCache {
 	return b.cache
 }
 
+// Session returns the underlying DiscordGo session.
+func (b *Bot) Session() *discordgo.Session {
+	return b.session
+}
+
 // RegisterCommand binds a slash command definition to its middleware-wrapped handler.
 func (b *Bot) RegisterCommand(cmd *discordgo.ApplicationCommand, handler InteractionHandlerFunc) {
 	b.routes[cmd.Name] = handler
 	b.registeredCmds = append(b.registeredCmds, cmd)
+}
+
+// SetIDVerifyHandler registers the dedicated 18+ ID Verification command suite (Staff Only)
+// and binds its component and modal handlers.
+func (b *Bot) SetIDVerifyHandler(h *handlers.IDVerifyHandler) {
+	b.idVerifyHandler = h
+	if h != nil {
+		b.RegisterCommand(
+			handlers.IDVerifyCommandDefinition(),
+			b.wrapHandler(h.HandleIDVerifyCommand, true, false),
+		)
+	}
 }
 
 // Start opens the WebSocket connection to Discord, syncs guild slash commands,
@@ -226,7 +329,45 @@ func (b *Bot) resolveAppID() (string, error) {
 // Stop cleanly closes the Discord WebSocket session during container shutdown.
 func (b *Bot) Stop() error {
 	b.logger.Info("closing discord websocket session")
+	if b.cmdQueue != nil {
+		b.cmdQueue.Stop(5 * time.Second)
+	}
+	if b.rateLimiter != nil {
+		b.rateLimiter.Stop()
+	}
 	return b.session.Close()
+}
+
+// wrapHandler constructs an enterprise middleware pipeline for slash commands:
+// 1. RecoverPanic: Catches runtime panics gracefully
+// 2. RateLimit: Protects bot from user command flood and prevents Discord API rate limit starvation
+// 3. WithTimeoutGuard: Ensures slow commands auto-defer before 1.5s, preventing Discord 3s timeouts
+// 4. RequireRoles: Enforces staff role authorization when required
+func (b *Bot) wrapHandler(handler InteractionHandlerFunc, staffOnly bool, exemptFromRateLimit bool) InteractionHandlerFunc {
+	h := handler
+	if staffOnly {
+		h = RequireRoles(b.cfg.StaffRoleIDs, b.logger, h)
+	}
+	h = WithTimeoutGuard(1200*time.Millisecond, h)
+
+	var exempt []string
+	if exemptFromRateLimit {
+		exempt = []string{"red"}
+	}
+	h = RateLimit(b.rateLimiter, b.cfg.StaffRoleIDs, exempt, b.logger, h)
+	return RecoverPanic(b.logger, h)
+}
+
+// isStaffMember checks if the interaction author holds any configured staff or helper role.
+func (b *Bot) isStaffMember(i *discordgo.InteractionCreate) bool {
+	if i == nil || i.Member == nil {
+		return false
+	}
+	staffMap := make(map[string]struct{}, len(b.cfg.StaffRoleIDs))
+	for _, id := range b.cfg.StaffRoleIDs {
+		staffMap[id] = struct{}{}
+	}
+	return HasAnyRole(i.Member.Roles, staffMap)
 }
 
 // handleInteraction routes incoming interactions and logs structured request telemetry.
@@ -262,21 +403,52 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 		)
 
 		if handler, exists := b.routes[cmdName]; exists {
-			handler(s, i)
+			if b.cmdQueue != nil {
+				enqueued := b.cmdQueue.Enqueue(&queue.Task{
+					ID:          i.ID,
+					CommandName: cmdName,
+					UserID:      userID,
+					Execute: func() {
+						handler(s, i)
+						b.logger.Info("completed slash command interaction",
+							"interaction_id", i.ID,
+							"command", cmdName,
+							"subcommand", subCmd,
+							"user_id", userID,
+							"duration_ms", time.Since(start).Milliseconds(),
+						)
+					},
+				})
+				if !enqueued {
+					b.logger.Error("failed to enqueue slash command interaction, falling back to direct execution",
+						"interaction_id", i.ID,
+						"command", cmdName,
+					)
+					handler(s, i)
+					b.logger.Info("completed slash command interaction",
+						"interaction_id", i.ID,
+						"command", cmdName,
+						"subcommand", subCmd,
+						"user_id", userID,
+						"duration_ms", time.Since(start).Milliseconds(),
+					)
+				}
+			} else {
+				handler(s, i)
+				b.logger.Info("completed slash command interaction",
+					"interaction_id", i.ID,
+					"command", cmdName,
+					"subcommand", subCmd,
+					"user_id", userID,
+					"duration_ms", time.Since(start).Milliseconds(),
+				)
+			}
 		} else {
 			b.logger.Warn("no handler registered for slash command",
 				"command", cmdName,
 				"interaction_id", i.ID,
 			)
 		}
-
-		b.logger.Info("completed slash command interaction",
-			"interaction_id", i.ID,
-			"command", cmdName,
-			"subcommand", subCmd,
-			"user_id", userID,
-			"duration_ms", time.Since(start).Milliseconds(),
-		)
 
 	case discordgo.InteractionApplicationCommandAutocomplete:
 		cmdData := i.ApplicationCommandData()
@@ -315,6 +487,32 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 			"custom_id", compData.CustomID,
 			"component_type", compData.ComponentType,
 		)
+
+		// Guard button clicks from rapid user spam to prevent dropped responses
+		if userID != "" && b.rateLimiter != nil && !b.isStaffMember(i) {
+			if allowed, wait := b.rateLimiter.Allow(userID); !allowed {
+				waitSec := int(wait.Seconds())
+				if waitSec < 1 {
+					waitSec = 1
+				}
+				b.logger.Warn("button interaction rate limited",
+					"user_id", userID,
+					"custom_id", compData.CustomID,
+					"retry_after_sec", waitSec,
+				)
+				respondForbidden(s, i, fmt.Sprintf("⏱️ **Slow down!** You are clicking buttons too quickly. Please wait %d second(s).", waitSec))
+				break
+			}
+		}
+
+		if b.filterHandler != nil && b.filterHandler.HandleComponentInteraction(s, i) {
+			break
+		}
+
+		if b.idVerifyHandler != nil && b.idVerifyHandler.HandleComponentInteraction(s, i) {
+			break
+		}
+
 		if b.ticketHandler != nil {
 			RecoverPanic(b.logger, b.ticketHandler.HandleComponentInteraction)(s, i)
 		}
@@ -329,6 +527,9 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 			"username", username,
 			"custom_id", modalData.CustomID,
 		)
+		if b.idVerifyHandler != nil && b.idVerifyHandler.HandleModalSubmit(s, i) {
+			break
+		}
 		if b.ticketHandler != nil {
 			RecoverPanic(b.logger, b.ticketHandler.HandleModalSubmit)(s, i)
 		}

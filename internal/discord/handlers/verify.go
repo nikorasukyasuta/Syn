@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"syn/internal/domain"
-	"syn/internal/service"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+
+	"syn/internal/discord/syncutil"
+	"syn/internal/domain"
+	"syn/internal/service"
 )
 
 // VerifyCommandDefinition returns the Discord Slash Command specification.
@@ -40,11 +42,12 @@ type VerifyHandler struct {
 	svc              *service.VerificationService
 	verifiedRoleID   string
 	unverifiedRoleID string
+	lockMgr          *syncutil.UserLockManager
 	logger           *slog.Logger
 }
 
 // NewVerifyHandler initializes the Discord command handler.
-func NewVerifyHandler(svc *service.VerificationService, verifiedRoleID, unverifiedRoleID string, loggers ...*slog.Logger) *VerifyHandler {
+func NewVerifyHandler(svc *service.VerificationService, verifiedRoleID, unverifiedRoleID string, lockMgr *syncutil.UserLockManager, loggers ...*slog.Logger) *VerifyHandler {
 	var l *slog.Logger
 	if len(loggers) > 0 && loggers[0] != nil {
 		l = loggers[0]
@@ -56,6 +59,7 @@ func NewVerifyHandler(svc *service.VerificationService, verifiedRoleID, unverifi
 		svc:              svc,
 		verifiedRoleID:   verifiedRoleID,
 		unverifiedRoleID: unverifiedRoleID,
+		lockMgr:          lockMgr,
 		logger:           l,
 	}
 }
@@ -75,6 +79,11 @@ func (h *VerifyHandler) HandleVerifyCommand(s *discordgo.Session, i *discordgo.I
 	if targetUser == nil {
 		respondEphemeral(s, i, "Could not resolve target member.")
 		return
+	}
+
+	if h.lockMgr != nil {
+		unlock := h.lockMgr.Lock(targetUser.ID)
+		defer unlock()
 	}
 
 	// Pass the caller's Discord Role IDs (i.Member.Roles) to the service for secondary verification.
@@ -149,11 +158,17 @@ func (h *VerifyHandler) HandleVerifyCommand(s *discordgo.Session, i *discordgo.I
 }
 
 func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, message string) {
-	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content: message,
 			Flags:   discordgo.MessageFlagsEphemeral,
 		},
 	})
+	if err != nil {
+		_, _ = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: message,
+			Flags:   discordgo.MessageFlagsEphemeral,
+		})
+	}
 }

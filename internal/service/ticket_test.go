@@ -10,9 +10,11 @@ import (
 	"syn/internal/domain"
 )
 
-// mockTicketRepo provides an in-memory mock implementation of domain.TicketRepository for unit testing.
+// mockTicketRepo provides an in-memory mock implementation of domain.TicketRepository
+// and domain.TicketPanelRepository for unit testing.
 type mockTicketRepo struct {
 	ticketsByChannel map[string]*domain.Ticket
+	panelPosts       map[domain.TicketPanelType]*domain.TicketPanelPost
 	createErr        error
 	closeErr         error
 }
@@ -20,7 +22,34 @@ type mockTicketRepo struct {
 func newMockTicketRepo() *mockTicketRepo {
 	return &mockTicketRepo{
 		ticketsByChannel: make(map[string]*domain.Ticket),
+		panelPosts:       make(map[domain.TicketPanelType]*domain.TicketPanelPost),
 	}
+}
+
+func (m *mockTicketRepo) GetPanelPost(ctx context.Context, guildID string, panelType domain.TicketPanelType) (*domain.TicketPanelPost, error) {
+	if p, ok := m.panelPosts[panelType]; ok && p.GuildID == guildID {
+		cp := *p
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (m *mockTicketRepo) ListPanelPosts(ctx context.Context, guildID string) ([]*domain.TicketPanelPost, error) {
+	var list []*domain.TicketPanelPost
+	for _, pt := range domain.OrderedTicketPanelTypes {
+		if p, ok := m.panelPosts[pt]; ok && p.GuildID == guildID {
+			cp := *p
+			list = append(list, &cp)
+		}
+	}
+	return list, nil
+}
+
+func (m *mockTicketRepo) SavePanelPost(ctx context.Context, post *domain.TicketPanelPost) error {
+	cp := *post
+	cp.UpdatedAt = time.Now().UTC()
+	m.panelPosts[post.PanelType] = &cp
+	return nil
 }
 
 func (m *mockTicketRepo) CreateTicket(ctx context.Context, t *domain.Ticket) error {
@@ -276,3 +305,51 @@ func TestTicketType_Helpers(t *testing.T) {
 	}
 }
 
+func TestTicketService_PanelPosts(t *testing.T) {
+	t.Parallel()
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	repo := newMockTicketRepo()
+	svc := NewTicketService(repo, []string{"role_staff_1"}, silentLogger)
+
+	ctx := context.Background()
+	guildID := "guild_hub_1"
+
+	// 1. ListPanelPosts initializes and returns all 5 ordered ticket flows (including ID verification)
+	posts, err := svc.ListPanelPosts(ctx, guildID)
+	if err != nil {
+		t.Fatalf("unexpected error listing panel posts: %v", err)
+	}
+	if len(posts) != 5 {
+		t.Fatalf("expected 5 panel posts (ID verification + 4 ticket types), got %d", len(posts))
+	}
+	if posts[0].PanelType != domain.PanelTypeIDVerification {
+		t.Fatalf("expected first post to be id_verification, got %s", posts[0].PanelType)
+	}
+	if posts[0].PanelType.CustomID() != "btn_id_verify_start" {
+		t.Fatalf("expected id_verification customID 'btn_id_verify_start', got %s", posts[0].PanelType.CustomID())
+	}
+
+	// 2. Save custom title/description and MessageID for a post and verify in-place persistence
+	supportPost, err := svc.GetOrInitPanelPost(ctx, guildID, domain.PanelTypeSupport)
+	if err != nil {
+		t.Fatalf("unexpected error getting support post: %v", err)
+	}
+	supportPost.ChannelID = "ch_hub_999"
+	supportPost.MessageID = "msg_support_123"
+	supportPost.Title = "💬 Custom Support Flow"
+	supportPost.Description = "Updated instructions for support tickets."
+	supportPost.ButtonLabel = "Request Help"
+
+	if err := svc.SavePanelPost(ctx, supportPost); err != nil {
+		t.Fatalf("failed to save panel post: %v", err)
+	}
+
+	reloaded, err := svc.GetOrInitPanelPost(ctx, guildID, domain.PanelTypeSupport)
+	if err != nil {
+		t.Fatalf("failed to reload support post: %v", err)
+	}
+	if reloaded.MessageID != "msg_support_123" || reloaded.Title != "💬 Custom Support Flow" {
+		t.Fatalf("expected updated support post fields, got %+v", reloaded)
+	}
+}

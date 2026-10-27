@@ -55,17 +55,22 @@ func (r *VerificationRepo) SaveVerification(ctx context.Context, v *domain.Verif
 			ON CONFLICT (discord_user_id) DO UPDATE
 			SET is_verified = EXCLUDED.is_verified,
 			    verified_by_id = EXCLUDED.verified_by_id,
+			    verified_at = EXCLUDED.verified_at,
 			    updated_at = NOW()
 		`
 		if _, err := tx.Exec(ctx, upsertQuery, v.DiscordUserID, v.GuildID, v.IsVerified, v.VerifiedByID, v.VerifiedAt); err != nil {
 			return fmt.Errorf("upserting verification: %w", err)
 		}
 
+		action := "VERIFY_18_PLUS"
+		if !v.IsVerified {
+			action = "REVOKE_18_PLUS"
+		}
 		const auditQuery = `
 			INSERT INTO audit_logs (actor_id, target_id, action)
-			VALUES ($1, $2, 'VERIFY_18_PLUS')
+			VALUES ($1, $2, $3)
 		`
-		if _, err := tx.Exec(ctx, auditQuery, v.VerifiedByID, v.DiscordUserID); err != nil {
+		if _, err := tx.Exec(ctx, auditQuery, v.VerifiedByID, v.DiscordUserID, action); err != nil {
 			return fmt.Errorf("inserting audit log: %w", err)
 		}
 		return nil

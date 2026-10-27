@@ -19,11 +19,12 @@ var (
 type TicketType string
 
 const (
-	TicketTypeVerification TicketType = "verification"
-	TicketTypeReport       TicketType = "report"
-	TicketTypeBug          TicketType = "bug"
-	TicketTypeAccountIssue TicketType = "account_issue"
-	TicketTypeSupport      TicketType = "support"
+	TicketTypeVerification  TicketType = "verification"
+	TicketTypeReport        TicketType = "report"
+	TicketTypeBug           TicketType = "bug"
+	TicketTypeAccountIssue  TicketType = "account_issue"
+	TicketTypeSupport       TicketType = "support"
+	TicketTypeFilteredWords TicketType = "filtered_words"
 )
 
 // AllTicketTypes returns all supported ticket types.
@@ -33,12 +34,13 @@ var AllTicketTypes = []TicketType{
 	TicketTypeBug,
 	TicketTypeAccountIssue,
 	TicketTypeSupport,
+	TicketTypeFilteredWords,
 }
 
 // IsValid validates whether a ticket type is supported.
 func (t TicketType) IsValid() bool {
 	switch t {
-	case TicketTypeVerification, TicketTypeReport, TicketTypeBug, TicketTypeAccountIssue, TicketTypeSupport:
+	case TicketTypeVerification, TicketTypeReport, TicketTypeBug, TicketTypeAccountIssue, TicketTypeSupport, TicketTypeFilteredWords:
 		return true
 	default:
 		return false
@@ -58,6 +60,8 @@ func (t TicketType) DisplayName() string {
 		return "Account Issue Ticket"
 	case TicketTypeSupport:
 		return "Support Ticket"
+	case TicketTypeFilteredWords:
+		return "Filtered Words Ticket"
 	default:
 		return string(t)
 	}
@@ -76,6 +80,8 @@ func (t TicketType) Emoji() string {
 		return "👤"
 	case TicketTypeSupport:
 		return "💬"
+	case TicketTypeFilteredWords:
+		return "🚫"
 	default:
 		return "🎫"
 	}
@@ -94,6 +100,8 @@ func (t TicketType) ChannelPrefix() string {
 		return "account"
 	case TicketTypeSupport:
 		return "support"
+	case TicketTypeFilteredWords:
+		return "banned-word"
 	default:
 		return "ticket"
 	}
@@ -113,6 +121,8 @@ func ParseTicketType(raw string) (TicketType, error) {
 		return TicketTypeAccountIssue, nil
 	case "support":
 		return TicketTypeSupport, nil
+	case "filtered_words", "filtered-words", "banned_words", "banned-words", "filter":
+		return TicketTypeFilteredWords, nil
 	default:
 		return "", ErrInvalidTicketType
 	}
@@ -128,16 +138,16 @@ const (
 
 // Ticket represents a private member support channel and audit record.
 type Ticket struct {
-	ID          string
-	GuildID     string
-	ChannelID   string
-	CreatorID   string
-	Type        TicketType
-	Status      TicketStatus
-	ClosedByID  string
-	Resolution  string
-	CreatedAt   time.Time
-	ClosedAt    *time.Time
+	ID         string
+	GuildID    string
+	ChannelID  string
+	CreatorID  string
+	Type       TicketType
+	Status     TicketStatus
+	ClosedByID string
+	Resolution string
+	CreatedAt  time.Time
+	ClosedAt   *time.Time
 }
 
 // TicketRepository defines persistence operations for the ticket system.
@@ -148,4 +158,3 @@ type TicketRepository interface {
 	CloseTicket(ctx context.Context, guildID, channelID, closedByID, resolution string, closedAt time.Time) error
 	ListOpenTicketsByCreator(ctx context.Context, guildID, creatorID string) ([]*Ticket, error)
 }
-
