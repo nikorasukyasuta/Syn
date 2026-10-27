@@ -11,30 +11,34 @@ import (
 
 // Config holds enterprise application settings, database credentials, RBAC role mappings, and logging parameters.
 type Config struct {
-	DiscordToken        string
-	GuildID             string
-	VerifiedRoleID      string
-	UnverifiedRoleID    string
-	StaffRoleIDs        []string // Holds both Staff and Server Helper Role IDs
-	StaffAlertChannelID string   // Optional: Channel to send staff notifications/safeword alerts
-	SafewordEmoji       string   // Optional: Reaction emoji that triggers RED (defaults to "🛑")
-	DatabaseURL         string   // Full PostgreSQL connection string
-	AssetsDir           string
-	LogLevel            string
-	LogFilePath         string
-	LogMaxSizeMB        int
-	LogMaxBackups       int
-	LogMaxAgeDays       int
-	LogFormat           string
-	TicketCategoryID    string // Optional: Category ID where ticket channels are created
-	TicketLogChannelID  string // Optional: Channel ID where ticket closures are logged
-	FiltersDir          string // Optional: Directory holding word filter JSON files (default: "./config/filters")
-	WebPort             string // Optional: Port for web terms/privacy/health server (default: "8080")
-	WebBaseURL          string // Optional: Base public URL for terms/privacy links (default: "http://localhost:8080")
-	IDsFilePath         string // Path to the file where Discord IDs were loaded from (if applicable)
+	DiscordToken             string
+	GuildID                  string
+	VerifiedRoleID           string
+	UnverifiedRoleID         string
+	StaffRoleIDs             []string // Holds both Staff and Server Helper Role IDs
+	StaffAlertChannelID      string   // Optional: Channel to send staff notifications/safeword alerts
+	SafewordEmoji            string   // Optional: Reaction emoji that triggers RED (defaults to "🛑")
+	DatabaseURL              string   // Full PostgreSQL connection string
+	AssetsDir                string
+	LogLevel                 string
+	LogFilePath              string
+	LogMaxSizeMB             int
+	LogMaxBackups            int
+	LogMaxAgeDays            int
+	LogFormat                string
+	TicketCategoryID         string // Optional: Category ID where ticket channels are created
+	TicketLogChannelID       string // Optional: Channel ID where ticket closures are logged
+	FiltersDir               string // Optional: Directory holding word filter JSON files (default: "./config/filters")
+	WebPort                  string // Optional: Port for web terms/privacy/health server (default: "8080")
+	WebBaseURL               string // Optional: Base public URL for terms/privacy links (default: "http://localhost:8080")
+	MetricsLogPath           string // Optional: Rotating file path for time-series resource telemetry (default: "logs/metrics.jsonl")
+	MetricsSampleIntervalSec int    // Optional: Seconds between resource telemetry samples into cache (default: 15)
+	MetricsFlushIntervalSec  int    // Optional: Seconds between flushing cached resource telemetry to disk (default: 60)
+	IDsFilePath              string // Path to the file where Discord IDs were loaded from (if applicable)
 }
 
-// DiscordIDs represents Discord snowflake identifiers loaded from a dedicated JSON configuration file.
+// DiscordIDs represents Discord snowflake identifiers and non-secret runtime settings
+// loaded from a dedicated JSON configuration file (e.g., config/discord_ids.json).
 type DiscordIDs struct {
 	GuildID             string   `json:"guild_id"`
 	VerifiedRoleID      string   `json:"verified_role_id"`
@@ -44,7 +48,7 @@ type DiscordIDs struct {
 	TicketLogChannelID  string   `json:"ticket_log_channel_id"`
 	StaffAlertChannelID string   `json:"staff_alert_channel_id"`
 
-	// Supports nested structure: "roles": { ... }, "channels": { ... }
+	// Supports nested structure: "roles": { ... }, "channels": { ... }, "settings": { ... }
 	Roles struct {
 		VerifiedRoleID   string   `json:"verified_role_id"`
 		UnverifiedRoleID string   `json:"unverified_role_id"`
@@ -56,6 +60,16 @@ type DiscordIDs struct {
 		TicketLogChannelID  string `json:"ticket_log_channel_id"`
 		StaffAlertChannelID string `json:"staff_alert_channel_id"`
 	} `json:"channels"`
+
+	Settings struct {
+		SafewordEmoji            string `json:"safeword_emoji"`
+		LogLevel                 string `json:"log_level"`
+		LogFilePath              string `json:"log_file_path"`
+		MetricsLogPath           string `json:"metrics_log_path"`
+		MetricsSampleIntervalSec int    `json:"metrics_sample_interval_sec"`
+		MetricsFlushIntervalSec  int    `json:"metrics_flush_interval_sec"`
+		WebPort                  string `json:"web_port"`
+	} `json:"settings"`
 }
 
 // LoadDiscordIDsFile reads and parses a dedicated JSON configuration file containing server IDs.
@@ -174,11 +188,14 @@ func Load() (*Config, error) {
 	}
 
 	safewordEmoji := strings.TrimSpace(os.Getenv("SAFEWORD_EMOJI"))
+	if safewordEmoji == "" && fileIDs != nil && fileIDs.Settings.SafewordEmoji != "" {
+		safewordEmoji = strings.TrimSpace(fileIDs.Settings.SafewordEmoji)
+	}
 	if safewordEmoji == "" {
 		safewordEmoji = "🛑"
 	}
 
-	// 3. Infrastructure & Secrets (Database, Logging, Tokens)
+	// 3. Infrastructure & Secrets (Database, Logging, Telemetry, Tokens)
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		dbUser := os.Getenv("DB_USER")
@@ -201,7 +218,15 @@ func Load() (*Config, error) {
 		assetsDir = "/app/assets/panels"
 	}
 
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel == "" && fileIDs != nil && fileIDs.Settings.LogLevel != "" {
+		logLevel = fileIDs.Settings.LogLevel
+	}
+
 	logFilePath := os.Getenv("LOG_FILE_PATH")
+	if logFilePath == "" && fileIDs != nil && fileIDs.Settings.LogFilePath != "" {
+		logFilePath = fileIDs.Settings.LogFilePath
+	}
 	if logFilePath == "" {
 		logFilePath = "logs/syn.log"
 	}
@@ -215,12 +240,35 @@ func Load() (*Config, error) {
 		logFormat = "json"
 	}
 
+	metricsLogPath := os.Getenv("METRICS_LOG_PATH")
+	if metricsLogPath == "" && fileIDs != nil && fileIDs.Settings.MetricsLogPath != "" {
+		metricsLogPath = fileIDs.Settings.MetricsLogPath
+	}
+	if metricsLogPath == "" {
+		metricsLogPath = "logs/metrics.jsonl"
+	}
+
+	defaultSampleSec := 15
+	if fileIDs != nil && fileIDs.Settings.MetricsSampleIntervalSec > 0 {
+		defaultSampleSec = fileIDs.Settings.MetricsSampleIntervalSec
+	}
+	metricsSampleSec := parseIntEnv("METRICS_SAMPLE_INTERVAL_SEC", defaultSampleSec)
+
+	defaultFlushSec := 60
+	if fileIDs != nil && fileIDs.Settings.MetricsFlushIntervalSec > 0 {
+		defaultFlushSec = fileIDs.Settings.MetricsFlushIntervalSec
+	}
+	metricsFlushSec := parseIntEnv("METRICS_FLUSH_INTERVAL_SEC", defaultFlushSec)
+
 	filtersDir := os.Getenv("FILTERS_DIR")
 	if filtersDir == "" {
 		filtersDir = "./config/filters"
 	}
 
 	webPort := os.Getenv("WEB_PORT")
+	if webPort == "" && fileIDs != nil && fileIDs.Settings.WebPort != "" {
+		webPort = fileIDs.Settings.WebPort
+	}
 	if webPort == "" {
 		webPort = "8080"
 	}
@@ -232,27 +280,30 @@ func Load() (*Config, error) {
 	webBaseURL = strings.TrimRight(webBaseURL, "/")
 
 	cfg := &Config{
-		DiscordToken:        os.Getenv("DISCORD_TOKEN"),
-		GuildID:             guildID,
-		VerifiedRoleID:      verifiedRoleID,
-		UnverifiedRoleID:    unverifiedRoleID,
-		StaffRoleIDs:        staffRoles,
-		StaffAlertChannelID: staffAlertChan,
-		SafewordEmoji:       safewordEmoji,
-		DatabaseURL:         dbURL,
-		LogLevel:            os.Getenv("LOG_LEVEL"),
-		AssetsDir:           assetsDir,
-		LogFilePath:         logFilePath,
-		LogMaxSizeMB:        logMaxSize,
-		LogMaxBackups:       logMaxBackups,
-		LogMaxAgeDays:       logMaxAge,
-		LogFormat:           logFormat,
-		TicketCategoryID:    ticketCat,
-		TicketLogChannelID:  ticketLog,
-		FiltersDir:          filtersDir,
-		WebPort:             webPort,
-		WebBaseURL:          webBaseURL,
-		IDsFilePath:         resolvedIDsPath,
+		DiscordToken:             os.Getenv("DISCORD_TOKEN"),
+		GuildID:                  guildID,
+		VerifiedRoleID:           verifiedRoleID,
+		UnverifiedRoleID:         unverifiedRoleID,
+		StaffRoleIDs:             staffRoles,
+		StaffAlertChannelID:      staffAlertChan,
+		SafewordEmoji:            safewordEmoji,
+		DatabaseURL:              dbURL,
+		LogLevel:                 logLevel,
+		AssetsDir:                assetsDir,
+		LogFilePath:              logFilePath,
+		LogMaxSizeMB:             logMaxSize,
+		LogMaxBackups:            logMaxBackups,
+		LogMaxAgeDays:            logMaxAge,
+		LogFormat:                logFormat,
+		TicketCategoryID:         ticketCat,
+		TicketLogChannelID:       ticketLog,
+		FiltersDir:               filtersDir,
+		WebPort:                  webPort,
+		WebBaseURL:               webBaseURL,
+		MetricsLogPath:           metricsLogPath,
+		MetricsSampleIntervalSec: metricsSampleSec,
+		MetricsFlushIntervalSec:  metricsFlushSec,
+		IDsFilePath:              resolvedIDsPath,
 	}
 
 	if err := cfg.Validate(); err != nil {

@@ -9,15 +9,17 @@ import (
 	"net/http"
 	"time"
 
+	"syn/internal/telemetry"
 	"syn/internal/version"
 )
 
 // Server provides the public HTTP server hosting Terms of Service,
-// Privacy Policy, landing portal, and HTTP health checks.
+// Privacy Policy, landing portal, HTTP health checks, and time-series metrics.
 type Server struct {
-	httpServer *http.Server
-	logger     *slog.Logger
-	port       string
+	httpServer       *http.Server
+	logger           *slog.Logger
+	port             string
+	telemetryMonitor *telemetry.Monitor
 }
 
 // NewServer initializes a new Web Server on the specified port.
@@ -41,6 +43,7 @@ func NewServer(port string, logger *slog.Logger) *Server {
 	mux.HandleFunc("/privacy", s.handlePrivacy)
 	mux.HandleFunc("/privacy-policy", s.handlePrivacy)
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	s.httpServer = &http.Server{
 		Addr:         ":" + port,
@@ -51,6 +54,11 @@ func NewServer(port string, logger *slog.Logger) *Server {
 	}
 
 	return s
+}
+
+// SetTelemetryMonitor wires the resource telemetry monitor so /metrics can expose cached time-series data.
+func (s *Server) SetTelemetryMonitor(mon *telemetry.Monitor) {
+	s.telemetryMonitor = mon
 }
 
 // Handler returns the underlying HTTP handler, useful for testing.
@@ -113,4 +121,36 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"version": version.CurrentVersion,
 	})
 }
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	if s.telemetryMonitor == nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":  "disabled",
+			"samples": []any{},
+		})
+		return
+	}
+
+	pending, flushed, lastFlush, filePath := s.telemetryMonitor.CacheStats()
+	samples := s.telemetryMonitor.History()
+
+	var lastFlushStr string
+	if !lastFlush.IsZero() {
+		lastFlushStr = lastFlush.Format(time.RFC3339)
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":         "ok",
+		"version":        version.CurrentVersion,
+		"metrics_file":   filePath,
+		"buffered_count": pending,
+		"flushed_total":  flushed,
+		"last_flush_at":  lastFlushStr,
+		"samples":        samples,
+	})
+}
+
 

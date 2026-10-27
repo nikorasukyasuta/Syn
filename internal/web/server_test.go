@@ -7,10 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"syn/internal/telemetry"
 	"syn/internal/version"
 	"syn/internal/web"
 )
@@ -154,5 +156,58 @@ func TestWebServer_StartAndShutdown(t *testing.T) {
 	err := <-errChan
 	if err != nil {
 		t.Errorf("expected clean shutdown, got error: %v", err)
+	}
+}
+
+func TestWebServer_MetricsEndpoint(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := web.NewServer("0", logger)
+
+	// 1. Without telemetry monitor configured
+	req1 := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec1 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on /metrics without monitor, got %d", rec1.Code)
+	}
+	if !strings.Contains(rec1.Body.String(), `"status":"disabled"`) {
+		t.Fatalf("expected disabled status when monitor is nil, got %s", rec1.Body.String())
+	}
+
+	// 2. With active telemetry monitor and cached sample
+	tmpFile := filepath.Join(t.TempDir(), "metrics.jsonl")
+	mon, err := telemetry.NewMonitor(telemetry.Config{
+		FilePath:          tmpFile,
+		SampleInterval:    time.Minute,
+		FlushInterval:     time.Minute,
+		MaxHistorySamples: 10,
+	}, nil, nil, nil, logger)
+	if err != nil {
+		t.Fatalf("failed to create telemetry monitor: %v", err)
+	}
+	defer mon.Stop()
+
+	mon.SampleNow()
+	srv.SetTelemetryMonitor(mon)
+
+	req2 := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on /metrics with monitor, got %d", rec2.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec2.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("failed to unmarshal /metrics JSON: %v", err)
+	}
+	if payload["status"] != "ok" {
+		t.Fatalf("expected status 'ok', got %v", payload["status"])
+	}
+	samples, ok := payload["samples"].([]any)
+	if !ok || len(samples) != 1 {
+		t.Fatalf("expected 1 cached sample in /metrics response, got %v", payload["samples"])
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"syn/internal/repository/postgres"
 	"syn/internal/service"
 	"syn/internal/storage"
+	"syn/internal/telemetry"
 	"syn/internal/web"
 	"syn/migrations"
 )
@@ -130,6 +131,25 @@ func main() {
 	// Health and Infrastructure Diagnostics Handler (Public nominal, Staff deep diagnostics)
 	healthHandler := handlers.NewHealthHandler(cfg.StaffRoleIDs, dbPool, cmdQueue, lockMgr)
 
+	// System Resource Telemetry Cache & Periodic JSONL Metrics Flusher (for graphing & monitoring)
+	telemetryMonitor, err := telemetry.NewMonitor(
+		telemetry.Config{
+			FilePath:       cfg.MetricsLogPath,
+			SampleInterval: time.Duration(cfg.MetricsSampleIntervalSec) * time.Second,
+			FlushInterval:  time.Duration(cfg.MetricsFlushIntervalSec) * time.Second,
+		},
+		telemetry.NewPGXPoolStatsProvider(dbPool),
+		telemetry.NewCommandQueueStatsProvider(cmdQueue),
+		lockMgr,
+		logger,
+	)
+	if err != nil {
+		logger.Warn("failed to initialize system resource telemetry monitor; continuing without file flush", "error", err)
+	} else {
+		telemetryMonitor.Start()
+		healthHandler.SetTelemetryMonitor(telemetryMonitor)
+	}
+
 	// Bot Versioning and GitHub Source Tracking Handler
 	versionHandler := handlers.NewVersionHandler()
 
@@ -154,8 +174,11 @@ func main() {
 	idVerifySvc := service.NewIDVerificationService(idVerifyRepo, verifyRepo, auditRepo, cfg.StaffRoleIDs, logger)
 	idVerifyHandler := handlers.NewIDVerifyHandler(idVerifySvc, cfg, resCache, lockMgr, logger)
 
-	// Public Web Server for Terms, Privacy Policy, and Health
+	// Public Web Server for Terms, Privacy Policy, Health, and Time-Series Metrics
 	webServer := web.NewServer(cfg.WebPort, logger)
+	if telemetryMonitor != nil {
+		webServer.SetTelemetryMonitor(telemetryMonitor)
+	}
 	go func() {
 		if err := webServer.Start(); err != nil {
 			logger.Error("web server stopped with error", "error", err)
@@ -217,6 +240,12 @@ func main() {
 	// Allow up to 10 seconds for in-flight database transactions and web requests to complete
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
+
+	if telemetryMonitor != nil {
+		if err := telemetryMonitor.Stop(); err != nil {
+			logger.ErrorContext(shutdownCtx, "error stopping telemetry monitor", "error", err)
+		}
+	}
 
 	if err := webServer.Shutdown(shutdownCtx); err != nil {
 		logger.ErrorContext(shutdownCtx, "error shutting down web server", "error", err)

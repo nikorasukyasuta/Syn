@@ -197,6 +197,16 @@ func ParseTicketPanelType(raw string) (TicketPanelType, error) {
 	}
 }
 
+// IsValid returns true if the panel type is one of the 5 supported Ticket Hub flow types.
+func (p TicketPanelType) IsValid() bool {
+	switch p {
+	case PanelTypeIDVerification, PanelTypeSupport, PanelTypeAccountIssue, PanelTypeReport, PanelTypeBug:
+		return true
+	default:
+		return false
+	}
+}
+
 // CustomID returns the Discord button custom_id triggered by this panel post.
 func (p TicketPanelType) CustomID() string {
 	if p == PanelTypeIDVerification {

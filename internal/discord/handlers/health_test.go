@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"syn/internal/discord/handlers"
 	"syn/internal/discord/queue"
 	"syn/internal/discord/syncutil"
+	"syn/internal/telemetry"
 	"syn/internal/version"
 )
 
@@ -37,6 +39,19 @@ func TestHealthHandler_HandleHealthCommand_Public(t *testing.T) {
 	lockMgr := syncutil.NewUserLockManager()
 
 	h := handlers.NewHealthHandler(staffRoleIDs, nil, cmdQueue, lockMgr)
+	mon, err := telemetry.NewMonitor(telemetry.Config{
+		FilePath:          filepath.Join(t.TempDir(), "metrics.jsonl"),
+		SampleInterval:    time.Minute,
+		FlushInterval:     time.Minute,
+		MaxHistorySamples: 10,
+	}, nil, telemetry.NewCommandQueueStatsProvider(cmdQueue), lockMgr, silentLogger)
+	if err != nil {
+		t.Fatalf("failed to create telemetry monitor: %v", err)
+	}
+	defer mon.Stop()
+	mon.SampleNow()
+	h.SetTelemetryMonitor(mon)
+
 	session := newMockSession(http.StatusOK, `{}`)
 
 	// Regular user without staff role
@@ -65,6 +80,19 @@ func TestHealthHandler_HandleHealthCommand_Staff(t *testing.T) {
 	lockMgr := syncutil.NewUserLockManager()
 
 	h := handlers.NewHealthHandler(staffRoleIDs, nil, cmdQueue, lockMgr)
+	mon, err := telemetry.NewMonitor(telemetry.Config{
+		FilePath:          filepath.Join(t.TempDir(), "metrics.jsonl"),
+		SampleInterval:    time.Minute,
+		FlushInterval:     time.Minute,
+		MaxHistorySamples: 10,
+	}, nil, telemetry.NewCommandQueueStatsProvider(cmdQueue), lockMgr, silentLogger)
+	if err != nil {
+		t.Fatalf("failed to create telemetry monitor: %v", err)
+	}
+	defer mon.Stop()
+	mon.SampleNow()
+	h.SetTelemetryMonitor(mon)
+
 	session := newMockSession(http.StatusOK, `{}`)
 
 	// Staff user

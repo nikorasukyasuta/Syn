@@ -7,9 +7,9 @@ import (
 
 // Current version and source repository constants.
 const (
-	CurrentVersion   = "v1.2.2"
+	CurrentVersion   = "v1.2.3"
 	GitRepositoryURL = "https://github.com/nikorasukyasuta/Syn"
-	ReleaseDate      = "2026-10-22"
+	ReleaseDate      = "2026-10-28"
 )
 
 // Release represents a version milestone with date and feature highlights.
@@ -21,6 +21,16 @@ type Release struct {
 
 // History contains the chronological release log for the Syn bot.
 var History = []Release{
+	{
+		Version: "v1.2.3",
+		Date:    "2026-10-28",
+		Changes: []string{
+			"Enhanced Health Check (/health) with detailed resource telemetry and host metrics",
+			"Improved PostgreSQL connection pool monitoring and queue statistics reporting",
+			"Optimized command processing queue with better concurrency handling",
+			"Bug fixes and performance improvements across the bot's core functionalities",
+		},
+	},
 	{
 		Version: "v1.2.2",
 		Date:    "2026-10-27",

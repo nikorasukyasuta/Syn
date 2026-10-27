@@ -14,17 +14,19 @@ import (
 
 	"syn/internal/discord/queue"
 	"syn/internal/discord/syncutil"
+	"syn/internal/telemetry"
 	"syn/internal/version"
 )
 
 // HealthHandler manages the /health command, delivering public status for all members
-// and detailed infrastructure diagnostics (Docker, EC2, DB, Queue) exclusively to Staff.
+// and detailed infrastructure diagnostics (Docker, EC2, DB, Queue, Telemetry Cache) exclusively to Staff.
 type HealthHandler struct {
-	staffRoleMap map[string]struct{}
-	dbPool       *pgxpool.Pool
-	cmdQueue     *queue.CommandQueue
-	lockMgr      *syncutil.UserLockManager
-	startTime    time.Time
+	staffRoleMap     map[string]struct{}
+	dbPool           *pgxpool.Pool
+	cmdQueue         *queue.CommandQueue
+	lockMgr          *syncutil.UserLockManager
+	telemetryMonitor *telemetry.Monitor
+	startTime        time.Time
 }
 
 // NewHealthHandler constructs a new HealthHandler.
@@ -46,6 +48,11 @@ func NewHealthHandler(
 		lockMgr:      lockMgr,
 		startTime:    time.Now().UTC(),
 	}
+}
+
+// SetTelemetryMonitor attaches the system resource telemetry monitor to enrich Staff diagnostics.
+func (h *HealthHandler) SetTelemetryMonitor(mon *telemetry.Monitor) {
+	h.telemetryMonitor = mon
 }
 
 // HealthCommandDefinition defines the /health command visible to all users.
@@ -177,37 +184,53 @@ func (h *HealthHandler) buildHealthEmbed(s *discordgo.Session, isStaff bool) *di
 	loadAvg := readLoadAverage()
 	hostMem := readHostMemory()
 
+	fields := []*discordgo.MessageEmbedField{
+		{
+			Name:   "🤖 Bot Gateway & Process",
+			Value:  fmt.Sprintf("Status: 🟢 **Healthy**\nUptime: `%s`\nGateway Ping: `%d ms`\nGoroutines: `%d`\nActive User Locks: `%d`", formatDuration(uptime), ping.Milliseconds(), runtime.NumGoroutine(), activeLocks),
+			Inline: false,
+		},
+		{
+			Name:   "🐘 PostgreSQL Database",
+			Value:  fmt.Sprintf("Status: %s\nPing: %s\nConnection Pool: %s", dbStatus, dbPingStr, dbPoolStatsStr),
+			Inline: false,
+		},
+		{
+			Name:   "📬 Command Worker Queue",
+			Value:  queueStatsStr,
+			Inline: false,
+		},
+		{
+			Name:   "🐳 Docker Container Runtime",
+			Value:  fmt.Sprintf("Container ID: `%s`\nGo Runtime: `%s`\nArchitecture: `%s/%s`\nMemory: Heap `%.2f MB` / Sys `%.2f MB` (GCs: `%d`)", containerID, runtime.Version(), runtime.GOOS, runtime.GOARCH, heapAllocMB, sysMB, m.NumGC),
+			Inline: false,
+		},
+		{
+			Name:   "☁️ EC2 Host Instance (2 Cores Optimized)",
+			Value:  fmt.Sprintf("Logical CPUs: `%d` (GOMAXPROCS: `%d`)\nCPU Load Avg: `%s`\nHost Memory: `%s`", runtime.NumCPU(), runtime.GOMAXPROCS(0), loadAvg, hostMem),
+			Inline: false,
+		},
+	}
+
+	if h.telemetryMonitor != nil {
+		pending, flushed, _, filePath := h.telemetryMonitor.CacheStats()
+		monCPU := h.telemetryMonitor.MonitorCPUPercent()
+		cpuPctStr := "0.00%"
+		if latest, ok := h.telemetryMonitor.Latest(); ok {
+			cpuPctStr = fmt.Sprintf("%.2f%%", latest.HostCPUPercent)
+		}
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name:   "📈 Resource Telemetry Cache (≤1% CPU Cap)",
+			Value:  fmt.Sprintf("Host CPU: `%s` | Monitor CPU: `%.2f%%` (Cap: `1.00%%`)\nBuffered Samples: `%d` | Flushed Total: `%d` (`%s`)", cpuPctStr, monCPU, pending, flushed, filePath),
+			Inline: false,
+		})
+	}
+
 	return &discordgo.MessageEmbed{
 		Title:       "🛠️ Infrastructure & System Diagnostics (Staff Only)",
 		Description: "Real-time health telemetry across Bot processes, Docker runtime, PostgreSQL database, and EC2 host instance.",
 		Color:       0x3498DB, // Blue
-		Fields: []*discordgo.MessageEmbedField{
-			{
-				Name:   "🤖 Bot Gateway & Process",
-				Value:  fmt.Sprintf("Status: 🟢 **Healthy**\nUptime: `%s`\nGateway Ping: `%d ms`\nGoroutines: `%d`\nActive User Locks: `%d`", formatDuration(uptime), ping.Milliseconds(), runtime.NumGoroutine(), activeLocks),
-				Inline: false,
-			},
-			{
-				Name:   "🐘 PostgreSQL Database",
-				Value:  fmt.Sprintf("Status: %s\nPing: %s\nConnection Pool: %s", dbStatus, dbPingStr, dbPoolStatsStr),
-				Inline: false,
-			},
-			{
-				Name:   "📬 Command Worker Queue",
-				Value:  queueStatsStr,
-				Inline: false,
-			},
-			{
-				Name:   "🐳 Docker Container Runtime",
-				Value:  fmt.Sprintf("Container ID: `%s`\nGo Runtime: `%s`\nArchitecture: `%s/%s`\nMemory: Heap `%.2f MB` / Sys `%.2f MB` (GCs: `%d`)", containerID, runtime.Version(), runtime.GOOS, runtime.GOARCH, heapAllocMB, sysMB, m.NumGC),
-				Inline: false,
-			},
-			{
-				Name:   "☁️ EC2 Host Instance (2 Cores Optimized)",
-				Value:  fmt.Sprintf("Logical CPUs: `%d` (GOMAXPROCS: `%d`)\nCPU Load Avg: `%s`\nHost Memory: `%s`", runtime.NumCPU(), runtime.GOMAXPROCS(0), loadAvg, hostMem),
-				Inline: false,
-			},
-		},
+		Fields:      fields,
 		Footer: &discordgo.MessageEmbedFooter{
 			Text: fmt.Sprintf("Syn Production Suite • Version %s", version.CurrentVersion),
 		},
