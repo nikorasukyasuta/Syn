@@ -32,6 +32,7 @@ type Bot struct {
 	filterHandler   *handlers.FilterHandler
 	flashHandler    *handlers.FlashHandler
 	legalHandler    *handlers.LegalHandler
+	idVerifyHandler *handlers.IDVerifyHandler
 	cmdQueue        *queue.CommandQueue
 	lockMgr         *syncutil.UserLockManager
 	rateLimiter     *ratelimit.UserRateLimiter
@@ -227,6 +228,18 @@ func (b *Bot) Session() *discordgo.Session {
 func (b *Bot) RegisterCommand(cmd *discordgo.ApplicationCommand, handler InteractionHandlerFunc) {
 	b.routes[cmd.Name] = handler
 	b.registeredCmds = append(b.registeredCmds, cmd)
+}
+
+// SetIDVerifyHandler registers the dedicated 18+ ID Verification command suite (Staff Only)
+// and binds its component and modal handlers.
+func (b *Bot) SetIDVerifyHandler(h *handlers.IDVerifyHandler) {
+	b.idVerifyHandler = h
+	if h != nil {
+		b.RegisterCommand(
+			handlers.IDVerifyCommandDefinition(),
+			b.wrapHandler(h.HandleIDVerifyCommand, true, false),
+		)
+	}
 }
 
 // Start opens the WebSocket connection to Discord, syncs guild slash commands,
@@ -496,6 +509,10 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 			break
 		}
 
+		if b.idVerifyHandler != nil && b.idVerifyHandler.HandleComponentInteraction(s, i) {
+			break
+		}
+
 		if b.ticketHandler != nil {
 			RecoverPanic(b.logger, b.ticketHandler.HandleComponentInteraction)(s, i)
 		}
@@ -510,6 +527,9 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 			"username", username,
 			"custom_id", modalData.CustomID,
 		)
+		if b.idVerifyHandler != nil && b.idVerifyHandler.HandleModalSubmit(s, i) {
+			break
+		}
 		if b.ticketHandler != nil {
 			RecoverPanic(b.logger, b.ticketHandler.HandleModalSubmit)(s, i)
 		}

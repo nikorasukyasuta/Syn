@@ -60,7 +60,6 @@ func TicketCommandDefinition() *discordgo.ApplicationCommand {
 						Type:        discordgo.ApplicationCommandOptionString,
 						Required:    true,
 						Choices: []*discordgo.ApplicationCommandOptionChoice{
-							{Name: "🛡️ Verification Ticket", Value: "verification"},
 							{Name: "🚨 Report Ticket", Value: "report"},
 							{Name: "🐛 Bug Ticket", Value: "bug"},
 							{Name: "👤 Account Issue Ticket", Value: "account_issue"},
@@ -90,8 +89,46 @@ func TicketCommandDefinition() *discordgo.ApplicationCommand {
 			},
 			{
 				Name:        "panel",
-				Description: "Post the interactive Ticket Creation Panel (Staff Only)",
+				Description: "Provision or sync the read-only Ticket Creation Hub channel and all flow posts (Staff Only)",
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
+			},
+			{
+				Name:        "update-post",
+				Description: "Dynamically update a specific ticket type's post and embed in-place (Staff Only)",
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Options: []*discordgo.ApplicationCommandOption{
+					{
+						Name:        "type",
+						Description: "Which ticket flow post in the Ticket Hub channel to update",
+						Type:        discordgo.ApplicationCommandOptionString,
+						Required:    true,
+						Choices: []*discordgo.ApplicationCommandOptionChoice{
+							{Name: "🪪 18+ ID Verification", Value: string(domain.PanelTypeIDVerification)},
+							{Name: "💬 Support Ticket", Value: string(domain.PanelTypeSupport)},
+							{Name: "👤 Account Issue Ticket", Value: string(domain.PanelTypeAccountIssue)},
+							{Name: "🚨 Report Ticket", Value: string(domain.PanelTypeReport)},
+							{Name: "🐛 Bug Ticket", Value: string(domain.PanelTypeBug)},
+						},
+					},
+					{
+						Name:        "title",
+						Description: "New embed title (leave blank to open interactive editor modal)",
+						Type:        discordgo.ApplicationCommandOptionString,
+						Required:    false,
+					},
+					{
+						Name:        "description",
+						Description: "New embed description / instructions (leave blank to open interactive editor modal)",
+						Type:        discordgo.ApplicationCommandOptionString,
+						Required:    false,
+					},
+					{
+						Name:        "button_label",
+						Description: "New button text (leave blank to open interactive editor modal)",
+						Type:        discordgo.ApplicationCommandOptionString,
+						Required:    false,
+					},
+				},
 			},
 		},
 	}
@@ -101,7 +138,7 @@ func TicketCommandDefinition() *discordgo.ApplicationCommand {
 func (h *TicketHandler) HandleTicketCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	options := i.ApplicationCommandData().Options
 	if len(options) == 0 {
-		h.respondEphemeral(s, i, "Please specify a ticket subcommand: `/ticket open`, `/ticket close`, or `/ticket panel`.")
+		h.respondEphemeral(s, i, "Please specify a ticket subcommand: `/ticket open`, `/ticket close`, `/ticket panel`, or `/ticket update-post`.")
 		return
 	}
 
@@ -113,6 +150,8 @@ func (h *TicketHandler) HandleTicketCommand(s *discordgo.Session, i *discordgo.I
 		h.handleCommandClose(s, i, subCmd.Options)
 	case "panel":
 		h.handleCommandPanel(s, i)
+	case "update-post":
+		h.handleCommandUpdatePost(s, i, subCmd.Options)
 	default:
 		h.respondEphemeral(s, i, "Unknown ticket subcommand.")
 	}
@@ -157,26 +196,166 @@ func (h *TicketHandler) handleCommandClose(s *discordgo.Session, i *discordgo.In
 	h.promptCloseModal(s, i)
 }
 
-// handleCommandPanel sends the interactive ticket button panel (Staff only).
+// handleCommandPanel provisions or synchronizes the read-only Ticket Creation Hub channel
+// in the ticket category with individual, in-place updatable posts for each ticket & ID verification flow (Staff only).
 func (h *TicketHandler) handleCommandPanel(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if !h.svc.IsStaff(i.Member.Roles) {
+	if i.Member == nil || !h.svc.IsStaff(i.Member.Roles) {
 		h.respondEphemeral(s, i, "❌ Insufficient permissions: `/ticket panel` is restricted to Server Staff and Helpers.")
 		return
 	}
 
-	panelEmbed := BuildTicketPanelEmbed()
-	panelRows := BuildTicketPanelButtons()
-
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Embeds:     []*discordgo.MessageEmbed{panelEmbed},
-			Components: panelRows,
+			Flags: discordgo.MessageFlagsEphemeral,
 		},
 	})
-	if err != nil {
-		h.logger.Error("failed to post ticket panel", "error", err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	guildID := i.GuildID
+	if guildID == "" {
+		guildID = h.cfg.GuildID
 	}
+
+	hubChannelID, err := h.EnsureTicketHub(ctx, s, guildID)
+	if err != nil {
+		h.logger.Error("failed to provision or sync ticket creation hub", "error", err, "guild_id", guildID)
+		h.sendDeferredFollowup(s, i, fmt.Sprintf("❌ Failed to synchronize Ticket Creation Hub: %v", err))
+		return
+	}
+
+	h.sendDeferredFollowup(s, i, fmt.Sprintf(
+		"✅ **Ticket Creation Hub Synchronized!**\nChannel: <#%s>\nAll 5 individual ticket & 18+ ID verification flow posts have been synced in-place (read-only for members, interactive buttons only).",
+		hubChannelID,
+	))
+}
+
+// handleCommandUpdatePost allows Staff to dynamically update a single ticket type's embed and button
+// in-place without changing its position in the Ticket Creation Hub channel.
+func (h *TicketHandler) handleCommandUpdatePost(
+	s *discordgo.Session,
+	i *discordgo.InteractionCreate,
+	opts []*discordgo.ApplicationCommandInteractionDataOption,
+) {
+	if i.Member == nil || !h.svc.IsStaff(i.Member.Roles) {
+		h.respondEphemeral(s, i, "❌ Insufficient permissions: `/ticket update-post` is restricted to Server Staff and Helpers.")
+		return
+	}
+
+	optMap := optionsToMap(opts)
+	rawType := ""
+	if o, exists := optMap["type"]; exists {
+		rawType = o.StringValue()
+	}
+
+	panelType, err := domain.ParseTicketPanelType(rawType)
+	if err != nil {
+		h.respondEphemeral(s, i, "❌ Invalid ticket post type specified.")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	guildID := i.GuildID
+	if guildID == "" {
+		guildID = h.cfg.GuildID
+	}
+
+	post, err := h.svc.GetOrInitPanelPost(ctx, guildID, panelType)
+	if err != nil || post == nil {
+		h.respondEphemeral(s, i, "❌ Failed to load ticket post configuration.")
+		return
+	}
+
+	var newTitle, newDesc, newBtnLabel string
+	hasInlineEdits := false
+
+	if o, exists := optMap["title"]; exists && strings.TrimSpace(o.StringValue()) != "" {
+		newTitle = strings.TrimSpace(o.StringValue())
+		hasInlineEdits = true
+	}
+	if o, exists := optMap["description"]; exists && strings.TrimSpace(o.StringValue()) != "" {
+		newDesc = strings.TrimSpace(o.StringValue())
+		hasInlineEdits = true
+	}
+	if o, exists := optMap["button_label"]; exists && strings.TrimSpace(o.StringValue()) != "" {
+		newBtnLabel = strings.TrimSpace(o.StringValue())
+		hasInlineEdits = true
+	}
+
+	if !hasInlineEdits {
+		// Open interactive Modal pre-filled with the current embed title, description, and button label
+		modalErr := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseModal,
+			Data: &discordgo.InteractionResponseData{
+				CustomID: "modal_ticket_post_edit:" + string(panelType),
+				Title:    "Update Ticket Hub Post",
+				Components: []discordgo.MessageComponent{
+					discordgo.ActionsRow{
+						Components: []discordgo.MessageComponent{
+							discordgo.TextInput{
+								CustomID:  "post_title",
+								Label:     "Embed Title",
+								Style:     discordgo.TextInputShort,
+								Value:     post.Title,
+								Required:  true,
+								MaxLength: 150,
+							},
+						},
+					},
+					discordgo.ActionsRow{
+						Components: []discordgo.MessageComponent{
+							discordgo.TextInput{
+								CustomID:  "post_description",
+								Label:     "Flow Instructions & Description",
+								Style:     discordgo.TextInputParagraph,
+								Value:     post.Description,
+								Required:  true,
+								MaxLength: 2000,
+							},
+						},
+					},
+					discordgo.ActionsRow{
+						Components: []discordgo.MessageComponent{
+							discordgo.TextInput{
+								CustomID:  "post_button_label",
+								Label:     "Button Label",
+								Style:     discordgo.TextInputShort,
+								Value:     post.ButtonLabel,
+								Required:  true,
+								MaxLength: 80,
+							},
+						},
+					},
+				},
+			},
+		})
+		if modalErr != nil {
+			h.logger.Error("failed to open ticket post edit modal", "error", modalErr)
+		}
+		return
+	}
+
+	if newTitle != "" {
+		post.Title = newTitle
+	}
+	if newDesc != "" {
+		post.Description = newDesc
+	}
+	if newBtnLabel != "" {
+		post.ButtonLabel = newBtnLabel
+	}
+
+	if err := h.syncSinglePanelPostInPlace(ctx, s, guildID, post); err != nil {
+		h.logger.Error("failed to update ticket panel post in-place", "error", err, "panel_type", panelType)
+		h.respondEphemeral(s, i, fmt.Sprintf("❌ Failed to update `%s` post in Discord: %v", panelType, err))
+		return
+	}
+
+	h.respondEphemeral(s, i, fmt.Sprintf("✅ Updated the **%s** post in <#%s> in-place without changing its channel position.", post.Title, post.ChannelID))
 }
 
 // HandleComponentInteraction processes button clicks:
@@ -202,9 +381,58 @@ func (h *TicketHandler) HandleComponentInteraction(s *discordgo.Session, i *disc
 	}
 }
 
-// HandleModalSubmit processes resolution modal submissions ("modal_ticket_close").
+// HandleModalSubmit processes resolution modal submissions ("modal_ticket_close")
+// and dynamic post editor modal submissions ("modal_ticket_post_edit:<panel_type>").
 func (h *TicketHandler) HandleModalSubmit(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	data := i.ModalSubmitData()
+
+	if strings.HasPrefix(data.CustomID, "modal_ticket_post_edit:") {
+		if i.Member == nil || !h.svc.IsStaff(i.Member.Roles) {
+			h.respondEphemeral(s, i, "❌ Insufficient permissions: only Staff can edit Ticket Hub posts.")
+			return
+		}
+		rawType := strings.TrimPrefix(data.CustomID, "modal_ticket_post_edit:")
+		panelType, err := domain.ParseTicketPanelType(rawType)
+		if err != nil {
+			h.respondEphemeral(s, i, "❌ Invalid ticket post type.")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		guildID := i.GuildID
+		if guildID == "" {
+			guildID = h.cfg.GuildID
+		}
+
+		post, err := h.svc.GetOrInitPanelPost(ctx, guildID, panelType)
+		if err != nil || post == nil {
+			h.respondEphemeral(s, i, "❌ Failed to load ticket post record.")
+			return
+		}
+
+		inputs := extractModalInputs(data.Components)
+		if t := strings.TrimSpace(inputs["post_title"]); t != "" {
+			post.Title = t
+		}
+		if d := strings.TrimSpace(inputs["post_description"]); d != "" {
+			post.Description = d
+		}
+		if b := strings.TrimSpace(inputs["post_button_label"]); b != "" {
+			post.ButtonLabel = b
+		}
+
+		if err := h.syncSinglePanelPostInPlace(ctx, s, guildID, post); err != nil {
+			h.logger.Error("failed to update ticket panel post via modal", "error", err, "panel_type", panelType)
+			h.respondEphemeral(s, i, fmt.Sprintf("❌ Failed to update post in-place: %v", err))
+			return
+		}
+
+		h.respondEphemeral(s, i, fmt.Sprintf("✅ Updated **%s** in <#%s> in-place without changing its position!", post.Title, post.ChannelID))
+		return
+	}
+
 	if data.CustomID != "modal_ticket_close" {
 		return
 	}
@@ -675,18 +903,294 @@ func (h *TicketHandler) sendTicketWelcomeMessage(
 	}
 }
 
+// DefaultTicketHubChannelName is the default channel name created inside the Ticket category
+// for the read-only Ticket & 18+ ID Verification Hub.
+const DefaultTicketHubChannelName = "ticket-creation"
+
+// EnsureTicketHub provisions (if missing) the read-only Ticket Creation Hub channel inside the
+// ticket category and ensures each of the 5 ticket & 18+ ID verification flows has its own
+// standalone post and embed. Existing posts are updated in-place via ChannelMessageEditComplex
+// so their positions in the channel never change.
+func (h *TicketHandler) EnsureTicketHub(ctx context.Context, s *discordgo.Session, guildID string) (string, error) {
+	if guildID == "" {
+		guildID = h.cfg.GuildID
+	}
+
+	posts, err := h.svc.ListPanelPosts(ctx, guildID)
+	if err != nil {
+		return "", fmt.Errorf("loading ticket panel posts: %w", err)
+	}
+
+	hubChannelID, err := h.resolveOrCreateTicketHubChannel(s, guildID, posts)
+	if err != nil {
+		return "", err
+	}
+
+	for _, post := range posts {
+		embed := BuildSingleTicketPanelEmbed(post)
+		components := BuildSingleTicketPanelButton(post)
+
+		// If the post already has a message in the hub channel, edit it in-place so its position never changes.
+		if post.ChannelID == hubChannelID && post.MessageID != "" {
+			_, editErr := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+				ID:         post.MessageID,
+				Channel:    hubChannelID,
+				Embeds:     &[]*discordgo.MessageEmbed{embed},
+				Components: &components,
+			})
+			if editErr == nil {
+				_ = h.svc.SavePanelPost(ctx, post)
+				continue
+			}
+			h.logger.Warn("existing ticket panel post message not editable; re-creating post",
+				"panel_type", post.PanelType, "message_id", post.MessageID, "error", editErr)
+		}
+
+		sentMsg, sendErr := s.ChannelMessageSendComplex(hubChannelID, &discordgo.MessageSend{
+			Embeds:     []*discordgo.MessageEmbed{embed},
+			Components: components,
+		})
+		if sendErr != nil {
+			return hubChannelID, fmt.Errorf("sending ticket panel post %s: %w", post.PanelType, sendErr)
+		}
+
+		post.ChannelID = hubChannelID
+		post.MessageID = sentMsg.ID
+		if saveErr := h.svc.SavePanelPost(ctx, post); saveErr != nil {
+			h.logger.Warn("failed to persist ticket panel post metadata", "panel_type", post.PanelType, "error", saveErr)
+		}
+	}
+
+	return hubChannelID, nil
+}
+
+// syncSinglePanelPostInPlace updates a single ticket flow's post in-place in Discord without
+// changing its position in the channel. If the hub channel or message has not been created yet,
+// it persists the updated fields and runs EnsureTicketHub to provision all posts in order.
+func (h *TicketHandler) syncSinglePanelPostInPlace(
+	ctx context.Context,
+	s *discordgo.Session,
+	guildID string,
+	post *domain.TicketPanelPost,
+) error {
+	if err := h.svc.SavePanelPost(ctx, post); err != nil {
+		return fmt.Errorf("saving panel post configuration: %w", err)
+	}
+
+	if post.ChannelID == "" || post.MessageID == "" {
+		hubChannelID, err := h.EnsureTicketHub(ctx, s, guildID)
+		if err != nil {
+			return err
+		}
+		post.ChannelID = hubChannelID
+		return nil
+	}
+
+	embed := BuildSingleTicketPanelEmbed(post)
+	components := BuildSingleTicketPanelButton(post)
+
+	_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+		ID:         post.MessageID,
+		Channel:    post.ChannelID,
+		Embeds:     &[]*discordgo.MessageEmbed{embed},
+		Components: &components,
+	})
+	if err != nil {
+		// If the message or channel was deleted on Discord, re-sync the hub
+		h.logger.Warn("in-place edit failed, falling back to full hub sync", "panel_type", post.PanelType, "error", err)
+		hubChannelID, syncErr := h.EnsureTicketHub(ctx, s, guildID)
+		if syncErr != nil {
+			return err
+		}
+		post.ChannelID = hubChannelID
+	}
+
+	return nil
+}
+
+// resolveOrCreateTicketHubChannel finds an existing Ticket Creation Hub channel in the ticket category
+// or creates a new read-only channel viewable by all members.
+func (h *TicketHandler) resolveOrCreateTicketHubChannel(
+	s *discordgo.Session,
+	guildID string,
+	posts []*domain.TicketPanelPost,
+) (string, error) {
+	botID := ""
+	if s.State != nil && s.State.User != nil {
+		botID = s.State.User.ID
+	}
+	overwrites := h.buildTicketHubOverwrites(guildID, botID)
+	categoryID := h.resolveTicketCategory(s, guildID)
+
+	// 1. Check if any stored post already points to an active channel
+	for _, p := range posts {
+		if p.ChannelID != "" {
+			if ch, err := s.Channel(p.ChannelID); err == nil && ch != nil {
+				return ch.ID, nil
+			}
+		}
+	}
+
+	// 2. Check if a "ticket-creation" or "create-a-ticket" channel already exists in the guild
+	if channels, err := s.GuildChannels(guildID); err == nil {
+		for _, ch := range channels {
+			if ch.Type != discordgo.ChannelTypeGuildText {
+				continue
+			}
+			lowerName := strings.ToLower(ch.Name)
+			if lowerName == DefaultTicketHubChannelName || lowerName == "create-a-ticket" || lowerName == "open-a-ticket" {
+				if categoryID == "" || ch.ParentID == categoryID {
+					return ch.ID, nil
+				}
+			}
+		}
+	}
+
+	// 3. Create the read-only Ticket Creation Hub channel inside the ticket category
+	created, err := s.GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
+		Name:                 DefaultTicketHubChannelName,
+		Type:                 discordgo.ChannelTypeGuildText,
+		ParentID:             categoryID,
+		Topic:                "Read-only Ticket & 18+ ID Verification Hub — Click a button below to open a private ticket.",
+		Position:             0,
+		PermissionOverwrites: overwrites,
+	})
+	if err != nil {
+		return "", fmt.Errorf("creating ticket creation hub channel: %w", err)
+	}
+
+	if h.cache != nil {
+		h.cache.SetChannel(created.Name, created.ID)
+	}
+
+	return created.ID, nil
+}
+
+// buildTicketHubOverwrites constructs permissions for the Ticket Creation Hub channel:
+//   - Viewable by all members (@everyone, plus unverified & verified roles)
+//   - Strictly read-only (SendMessages, AddReactions, Threads, and AttachFiles are denied)
+//   - Interactive buttons remain usable by all members
+func (h *TicketHandler) buildTicketHubOverwrites(guildID, botID string) []*discordgo.PermissionOverwrite {
+	readOnlyAllow := int64(discordgo.PermissionViewChannel | discordgo.PermissionReadMessageHistory)
+	readOnlyDeny := int64(
+		discordgo.PermissionSendMessages |
+			discordgo.PermissionAddReactions |
+			discordgo.PermissionCreatePublicThreads |
+			discordgo.PermissionCreatePrivateThreads |
+			discordgo.PermissionSendMessagesInThreads |
+			discordgo.PermissionAttachFiles,
+	)
+
+	overwrites := []*discordgo.PermissionOverwrite{
+		// 1. @everyone: Viewable by all, strictly read-only (buttons only)
+		{
+			ID:    guildID,
+			Type:  discordgo.PermissionOverwriteTypeRole,
+			Allow: readOnlyAllow,
+			Deny:  readOnlyDeny,
+		},
+	}
+
+	// 2. Explicitly ensure both Unverified and Verified roles have read-only view access
+	// even if the parent Ticket category restricts @everyone.
+	seenRoles := map[string]bool{guildID: true}
+	for _, memberRoleID := range []string{h.cfg.UnverifiedRoleID, h.cfg.VerifiedRoleID} {
+		if memberRoleID != "" && !seenRoles[memberRoleID] {
+			seenRoles[memberRoleID] = true
+			overwrites = append(overwrites, &discordgo.PermissionOverwrite{
+				ID:    memberRoleID,
+				Type:  discordgo.PermissionOverwriteTypeRole,
+				Allow: readOnlyAllow,
+				Deny:  readOnlyDeny,
+			})
+		}
+	}
+
+	// 3. Allow Staff roles to view and manage messages
+	for _, staffRoleID := range h.cfg.StaffRoleIDs {
+		if staffRoleID == "" || seenRoles[staffRoleID] {
+			continue
+		}
+		seenRoles[staffRoleID] = true
+		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
+			ID:   staffRoleID,
+			Type: discordgo.PermissionOverwriteTypeRole,
+			Allow: discordgo.PermissionViewChannel |
+				discordgo.PermissionReadMessageHistory |
+				discordgo.PermissionManageMessages |
+				discordgo.PermissionManageChannels,
+			Deny: discordgo.PermissionSendMessages | discordgo.PermissionAddReactions,
+		})
+	}
+
+	// 4. Allow the bot itself full posting and message-editing permissions
+	if botID != "" {
+		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
+			ID:   botID,
+			Type: discordgo.PermissionOverwriteTypeMember,
+			Allow: discordgo.PermissionViewChannel |
+				discordgo.PermissionSendMessages |
+				discordgo.PermissionReadMessageHistory |
+				discordgo.PermissionEmbedLinks |
+				discordgo.PermissionManageMessages |
+				discordgo.PermissionManageChannels,
+			Deny: 0,
+		})
+	}
+
+	return overwrites
+}
+
+// BuildSingleTicketPanelEmbed constructs the standalone embed for a single ticket or ID verification post.
+func BuildSingleTicketPanelEmbed(post *domain.TicketPanelPost) *discordgo.MessageEmbed {
+	color := post.Color
+	if color <= 0 {
+		color = 0x5865F2
+	}
+	return &discordgo.MessageEmbed{
+		Title:       post.Title,
+		Description: post.Description,
+		Color:       color,
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: fmt.Sprintf("Syn Ticket Hub • Flow: %s", post.PanelType),
+		},
+	}
+}
+
+// BuildSingleTicketPanelButton constructs the standalone interactive button row for a single ticket or ID verification post.
+func BuildSingleTicketPanelButton(post *domain.TicketPanelPost) []discordgo.MessageComponent {
+	style := discordgo.ButtonStyle(post.ButtonStyle)
+	if style < discordgo.PrimaryButton || style > discordgo.DangerButton {
+		style = discordgo.PrimaryButton
+	}
+
+	btn := discordgo.Button{
+		CustomID: post.PanelType.CustomID(),
+		Label:    post.ButtonLabel,
+		Style:    style,
+	}
+	if strings.TrimSpace(post.ButtonEmoji) != "" {
+		btn.Emoji = &discordgo.ComponentEmoji{Name: strings.TrimSpace(post.ButtonEmoji)}
+	}
+
+	return []discordgo.MessageComponent{
+		discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{btn},
+		},
+	}
+}
+
 // BuildTicketPanelEmbed generates the persistent ticket creation panel embed.
 func BuildTicketPanelEmbed() *discordgo.MessageEmbed {
 	return &discordgo.MessageEmbed{
-		Title: "🎫 Server Support & Verification Tickets",
-		Description: "Need assistance, want to report an issue, or request verification?\n" +
+		Title: "🎫 Server Support & Report Tickets",
+		Description: "Need assistance or want to report an issue?\n" +
 			"Click the button below that corresponds to your request to open a private ticket.\n\n" +
-			"🛡️ **Verification Ticket** — Request 18+ verification or review\n" +
 			"🚨 **Report Ticket** — Report server misconduct, harassment, or rule violations\n" +
 			"🐛 **Bug Ticket** — Report bot glitches or server technical bugs\n" +
 			"👤 **Account Issue Ticket** — Assistance with roles, access, or account issues\n" +
 			"💬 **Support Ticket** — General server questions and support\n\n" +
-			"*Note: You may only have one active ticket of each type at a time.*",
+			"*Note: For 18+ age verification, please use the dedicated 🪪 **18+ ID Verification** panel.*",
 		Color: 0x5865F2,
 		Footer: &discordgo.MessageEmbedFooter{
 			Text: "Syn Support Suite • Enterprise Security",
@@ -699,16 +1203,16 @@ func BuildTicketPanelButtons() []discordgo.MessageComponent {
 	row1 := discordgo.ActionsRow{
 		Components: []discordgo.MessageComponent{
 			discordgo.Button{
-				CustomID: "btn_ticket_create:verification",
-				Label:    "Verification",
-				Style:    discordgo.PrimaryButton,
-				Emoji:    &discordgo.ComponentEmoji{Name: "🛡️"},
-			},
-			discordgo.Button{
 				CustomID: "btn_ticket_create:report",
 				Label:    "Report",
 				Style:    discordgo.DangerButton,
 				Emoji:    &discordgo.ComponentEmoji{Name: "🚨"},
+			},
+			discordgo.Button{
+				CustomID: "btn_ticket_create:support",
+				Label:    "Support",
+				Style:    discordgo.SuccessButton,
+				Emoji:    &discordgo.ComponentEmoji{Name: "💬"},
 			},
 		},
 	}
@@ -726,12 +1230,6 @@ func BuildTicketPanelButtons() []discordgo.MessageComponent {
 				Label:    "Account Issue",
 				Style:    discordgo.SecondaryButton,
 				Emoji:    &discordgo.ComponentEmoji{Name: "👤"},
-			},
-			discordgo.Button{
-				CustomID: "btn_ticket_create:support",
-				Label:    "Support",
-				Style:    discordgo.SuccessButton,
-				Emoji:    &discordgo.ComponentEmoji{Name: "💬"},
 			},
 		},
 	}

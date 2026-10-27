@@ -184,8 +184,13 @@ func (h *FlashHandler) handleSetTimer(s *discordgo.Session, i *discordgo.Interac
 				Inline: true,
 			},
 			{
+				Name:   "Content Policy",
+				Value:  "📸 **Photos Only** (Text-only comments & non-photo files are deleted immediately)",
+				Inline: false,
+			},
+			{
 				Name:  "Channel Guidelines",
-				Value: "All photos and messages uploaded to this channel will automatically expire and be deleted from Discord after the configured timer.",
+				Value: "All photos uploaded to this channel (along with their captions) will automatically expire and be deleted from Discord after the configured timer.",
 			},
 		},
 		Footer: &discordgo.MessageEmbedFooter{
@@ -331,9 +336,10 @@ func (h *FlashHandler) handleStatus(s *discordgo.Session, i *discordgo.Interacti
 }
 
 // HandleMessageCreate intercepts messages in Flash and Dash channels:
-// 1. If photos/attachments are unspoilered, downloads them, re-posts with SPOILER_ prefix,
+// 1. Enforces photo-only policy: immediately deletes text-only comments or non-photo attachments.
+// 2. If photos are unspoilered, downloads them, re-posts with SPOILER_ prefix (preserving optional caption),
 //    deletes original, and schedules deletion.
-// 2. If already spoilered or text, schedules deletion directly.
+// 3. If all photos are already spoilered, schedules deletion directly.
 func (h *FlashHandler) HandleMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m == nil || m.Author == nil || m.Author.Bot {
 		return
@@ -345,6 +351,25 @@ func (h *FlashHandler) HandleMessageCreate(s *discordgo.Session, m *discordgo.Me
 
 	duration, isFlash := h.svc.GetChannelDuration(m.ChannelID)
 	if !isFlash {
+		return
+	}
+
+	// Enforce photo-only policy: reject text-only comments or non-photo attachments immediately
+	if len(m.Attachments) == 0 || !hasOnlyPhotoAttachments(m.Attachments) {
+		if err := s.ChannelMessageDelete(m.ChannelID, m.ID); err != nil {
+			h.logger.Warn("failed to delete non-photo message in flash and dash channel",
+				"channel_id", m.ChannelID,
+				"message_id", m.ID,
+				"author_id", m.Author.ID,
+				"error", err,
+			)
+		} else {
+			h.logger.Info("deleted non-photo comment/message in flash and dash channel",
+				"channel_id", m.ChannelID,
+				"message_id", m.ID,
+				"author_id", m.Author.ID,
+			)
+		}
 		return
 	}
 
@@ -362,8 +387,38 @@ func (h *FlashHandler) HandleMessageCreate(s *discordgo.Session, m *discordgo.Me
 		return
 	}
 
-	// Already spoilered attachments or text-only messages: schedule deletion
+	// Already spoilered photo attachments: schedule deletion
 	h.svc.ScheduleMessageDeletion(s, m.GuildID, m.ChannelID, m.ID, duration)
+}
+
+// IsPhotoAttachment checks whether a Discord message attachment is an image/photo file.
+func IsPhotoAttachment(att *discordgo.MessageAttachment) bool {
+	if att == nil {
+		return false
+	}
+	ct := strings.ToLower(strings.TrimSpace(att.ContentType))
+	if strings.HasPrefix(ct, "image/") {
+		return true
+	}
+	cleanName := strings.ToLower(strings.TrimPrefix(att.Filename, "SPOILER_"))
+	for _, ext := range []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".avif"} {
+		if strings.HasSuffix(cleanName, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOnlyPhotoAttachments(attachments []*discordgo.MessageAttachment) bool {
+	if len(attachments) == 0 {
+		return false
+	}
+	for _, att := range attachments {
+		if !IsPhotoAttachment(att) {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *FlashHandler) autoSpoilerAndSchedule(s *discordgo.Session, m *discordgo.MessageCreate, duration time.Duration) {

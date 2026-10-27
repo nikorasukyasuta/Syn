@@ -149,6 +149,11 @@ func main() {
 	// Legal and Privacy Command Handlers
 	legalHandler := handlers.NewLegalHandler(cfg)
 
+	// Dedicated 18+ ID Verification Flow (Staff-Gated Commands + User Panel)
+	idVerifyRepo := postgres.NewIDVerificationRepo(dbPool)
+	idVerifySvc := service.NewIDVerificationService(idVerifyRepo, verifyRepo, auditRepo, cfg.StaffRoleIDs, logger)
+	idVerifyHandler := handlers.NewIDVerifyHandler(idVerifySvc, cfg, resCache, lockMgr, logger)
+
 	// Public Web Server for Terms, Privacy Policy, and Health
 	webServer := web.NewServer(cfg.WebPort, logger)
 	go func() {
@@ -178,6 +183,7 @@ func main() {
 		logger.Error("failed to initialize discord bot", "error", err)
 		os.Exit(1)
 	}
+	bot.SetIDVerifyHandler(idVerifyHandler)
 
 	// 5. Start the Bot
 	if err := bot.Start(); err != nil {
@@ -189,6 +195,17 @@ func main() {
 	if err := flashSvc.Init(ctx, bot.Session(), cfg.GuildID); err != nil {
 		logger.Warn("failed to initialize flash and dash service", "error", err)
 	}
+
+	// Automatically provision or sync the read-only Ticket Creation Hub channel and its per-type posts
+	go func() {
+		hubCtx, hubCancel := context.WithTimeout(ctx, 15*time.Second)
+		defer hubCancel()
+		if hubChID, err := ticketHandler.EnsureTicketHub(hubCtx, bot.Session(), cfg.GuildID); err != nil {
+			logger.Warn("failed to auto-sync ticket creation hub on startup", "error", err)
+		} else {
+			logger.Info("ticket creation hub synchronized", "channel_id", hubChID)
+		}
+	}()
 
 	// 6. Block until OS termination signal (Docker stop / EC2 reboot)
 	stopChan := make(chan os.Signal, 1)

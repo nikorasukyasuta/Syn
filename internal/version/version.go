@@ -23,9 +23,11 @@ type Release struct {
 var History = []Release{
 	{
 		Version: "v1.2.2",
-		Date:    "2026-10-22",
+		Date:    "2026-10-27",
 		Changes: []string{
-			"Flash and Dash photo channels with mandatory image auto-spoilering and configurable TTL deletion timers",
+			"Flash and Dash photo-only channels with automatic comment deletion, mandatory image auto-spoilering, and configurable TTL deletion timers",
+			"Dedicated 18+ ID Verification system (/id-verify) with user-initiated verification panel and staff-gated approve, deny, revoke, and status commands",
+			"Read-only Ticket Creation Hub channel in the ticket category with standalone, in-place updatable posts (/ticket panel, /ticket update-post) for 18+ ID Verification and all ticket flows",
 			"Public web server hosting styled Terms & Conditions and Privacy Policy pages",
 			"Ephemeral Discord slash commands (/terms and /privacy) displaying policy summaries and web links",
 		},

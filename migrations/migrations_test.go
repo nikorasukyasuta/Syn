@@ -19,11 +19,11 @@ func TestEmbeddedMigrations(t *testing.T) {
 		}
 	}
 
-	if len(sqlFiles) < 6 {
-		t.Fatalf("expected at least 6 migration files, found %d: %v", len(sqlFiles), sqlFiles)
+	if len(sqlFiles) < 8 {
+		t.Fatalf("expected at least 8 migration files, found %d: %v", len(sqlFiles), sqlFiles)
 	}
 
-	expectedPrefixes := []string{"000001_", "000002_", "000003_", "000004_", "000005_", "000006_"}
+	expectedPrefixes := []string{"000001_", "000002_", "000003_", "000004_", "000005_", "000006_", "000007_", "000008_"}
 	for i, prefix := range expectedPrefixes {
 		if !strings.HasPrefix(sqlFiles[i], prefix) {
 			t.Errorf("migration %d expected prefix %s, got %s", i, prefix, sqlFiles[i])

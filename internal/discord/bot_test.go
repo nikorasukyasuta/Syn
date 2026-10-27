@@ -98,6 +98,13 @@ func TestNewBot_Success(t *testing.T) {
 		t.Error("expected bot.Session() to return non-nil session")
 	}
 
+	idVerifySvc := service.NewIDVerificationService(nil, nil, nil, cfg.StaffRoleIDs, silentLogger)
+	idVerifyHandler := handlers.NewIDVerifyHandler(idVerifySvc, cfg, resCache, lockMgr, silentLogger)
+	bot.SetIDVerifyHandler(idVerifyHandler)
+	if _, ok := bot.routes["id-verify"]; !ok {
+		t.Error("expected /id-verify to be registered in bot.routes")
+	}
+
 	// Test RegisterCommand
 	cmd := &discordgo.ApplicationCommand{
 		Name:        "custom-test",

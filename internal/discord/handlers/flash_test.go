@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	"syn/internal/discord/handlers"
 	"syn/internal/domain"
 	"syn/internal/service"
+	"sync"
 )
 
 type mockFlashRepo struct {
@@ -349,5 +349,91 @@ func TestFlashHandler_HandleMessageCreate(t *testing.T) {
 	// Check if re-posted message was scheduled
 	if repo.messages["msg_reposted_456"] == nil {
 		t.Errorf("expected reposted spoilered message 'msg_reposted_456' to be scheduled in repository")
+	}
+
+	// Case 5: Text-only comment (no photo attachment) is deleted immediately and NOT scheduled
+	textCommentMsg := &discordgo.MessageCreate{
+		Message: &discordgo.Message{
+			ID:        "msg_text_comment",
+			ChannelID: "ch_flash",
+			GuildID:   "guild_123",
+			Author:    &discordgo.User{ID: "user_789"},
+			Content:   "Nice photo!",
+		},
+	}
+	handler.HandleMessageCreate(session, textCommentMsg)
+	time.Sleep(50 * time.Millisecond)
+	if repo.messages["msg_text_comment"] != nil {
+		t.Errorf("expected text-only comment 'msg_text_comment' to be deleted immediately and NOT scheduled")
+	}
+
+	// Case 6: Non-photo attachment (e.g. PDF document) is deleted immediately and NOT scheduled
+	nonPhotoAttachmentMsg := &discordgo.MessageCreate{
+		Message: &discordgo.Message{
+			ID:        "msg_pdf_file",
+			ChannelID: "ch_flash",
+			GuildID:   "guild_123",
+			Author:    &discordgo.User{ID: "user_789"},
+			Attachments: []*discordgo.MessageAttachment{
+				{
+					ID:          "att_pdf",
+					Filename:    "document.pdf",
+					ContentType: "application/pdf",
+					URL:         "http://example.com/document.pdf",
+				},
+			},
+		},
+	}
+	handler.HandleMessageCreate(session, nonPhotoAttachmentMsg)
+	time.Sleep(50 * time.Millisecond)
+	if repo.messages["msg_pdf_file"] != nil {
+		t.Errorf("expected non-photo attachment 'msg_pdf_file' to be deleted immediately and NOT scheduled")
+	}
+}
+
+func TestIsPhotoAttachment(t *testing.T) {
+	tests := []struct {
+		name string
+		att  *discordgo.MessageAttachment
+		want bool
+	}{
+		{
+			name: "Nil attachment",
+			att:  nil,
+			want: false,
+		},
+		{
+			name: "Image MIME type",
+			att:  &discordgo.MessageAttachment{Filename: "file", ContentType: "image/png"},
+			want: true,
+		},
+		{
+			name: "JPEG extension",
+			att:  &discordgo.MessageAttachment{Filename: "SPOILER_selfie.jpeg"},
+			want: true,
+		},
+		{
+			name: "WebP extension",
+			att:  &discordgo.MessageAttachment{Filename: "pic.webp"},
+			want: true,
+		},
+		{
+			name: "Non-image PDF",
+			att:  &discordgo.MessageAttachment{Filename: "report.pdf", ContentType: "application/pdf"},
+			want: false,
+		},
+		{
+			name: "Video MP4",
+			att:  &discordgo.MessageAttachment{Filename: "clip.mp4", ContentType: "video/mp4"},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := handlers.IsPhotoAttachment(tc.att); got != tc.want {
+				t.Errorf("IsPhotoAttachment() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
