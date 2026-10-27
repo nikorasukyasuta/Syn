@@ -11,6 +11,7 @@ import (
 
 	"syn/internal/telemetry"
 	"syn/internal/version"
+	"syn/internal/web/middleware"
 )
 
 // Server provides the public HTTP server hosting Terms of Service,
@@ -47,7 +48,7 @@ func NewServer(port string, logger *slog.Logger) *Server {
 
 	s.httpServer = &http.Server{
 		Addr:         ":" + port,
-		Handler:      s.securityHeadersMiddleware(mux),
+		Handler:      middleware.SecurityHeaders(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -79,16 +80,6 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("shutting down public web portal")
 	return s.httpServer.Shutdown(ctx)
-}
-
-func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("X-XSS-Protection", "1; mode=block")
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		next.ServeHTTP(w, r)
-	})
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {

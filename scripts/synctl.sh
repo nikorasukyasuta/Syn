@@ -3,8 +3,8 @@
 # synctl.sh
 #
 # Unified master operations CLI for managing the Syn Discord Bot & PostgreSQL
-# production stack on AWS EC2. Dispatches to the specialized helper scripts in
-# ./scripts/.
+# production stack on AWS EC2. Dispatches to the categorized helper scripts in
+# ./scripts/{deploy,db,ops,logs}/.
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -18,32 +18,32 @@ fi
 
 case "$SUBCMD" in
 	deploy|build)
-		exec "${SCRIPT_DIR}/build_deploy.sh" "$@"
+		exec "${SCRIPT_DIR}/deploy/build_deploy.sh" "$@"
 		;;
 	logs|log)
-		exec "${SCRIPT_DIR}/logs.sh" "$@"
+		exec "${SCRIPT_DIR}/logs/logs.sh" "$@"
 		;;
 	status|health)
-		exec "${SCRIPT_DIR}/maintenance.sh" status "$@"
+		exec "${SCRIPT_DIR}/ops/maintenance.sh" status "$@"
 		;;
 	restart|start|stop|prune|cleanup|vacuum|stats)
-		exec "${SCRIPT_DIR}/maintenance.sh" "$SUBCMD" "$@"
+		exec "${SCRIPT_DIR}/ops/maintenance.sh" "$SUBCMD" "$@"
 		;;
 	backup|restore|psql|shell|db-list|db-summary)
 		case "$SUBCMD" in
-			db-list)    exec "${SCRIPT_DIR}/db_backup.sh" list "$@" ;;
-			db-summary) exec "${SCRIPT_DIR}/db_backup.sh" summary "$@" ;;
-			*)          exec "${SCRIPT_DIR}/db_backup.sh" "$SUBCMD" "$@" ;;
+			db-list)    exec "${SCRIPT_DIR}/db/db_backup.sh" list "$@" ;;
+			db-summary) exec "${SCRIPT_DIR}/db/db_backup.sh" summary "$@" ;;
+			*)          exec "${SCRIPT_DIR}/db/db_backup.sh" "$SUBCMD" "$@" ;;
 		esac
 		;;
 	dbeaver)
-		exec "${SCRIPT_DIR}/open_db_for_dbeaver.sh" "$@"
+		exec "${SCRIPT_DIR}/db/open_db_for_dbeaver.sh" "$@"
 		;;
 	setup|check|audit|init-config|swap|systemd|cron)
 		if [[ "$SUBCMD" == "setup" ]]; then
-			exec "${SCRIPT_DIR}/ec2_setup.sh" "$@"
+			exec "${SCRIPT_DIR}/ops/ec2_setup.sh" "$@"
 		else
-			exec "${SCRIPT_DIR}/ec2_setup.sh" "$SUBCMD" "$@"
+			exec "${SCRIPT_DIR}/ops/ec2_setup.sh" "$SUBCMD" "$@"
 		fi
 		;;
 	help|--help|-h|*)
@@ -53,15 +53,16 @@ case "$SUBCMD" in
 ================================================================================
 Usage: $0 <command> [options]
 
-Deployment:
+Deployment (scripts/deploy/):
   deploy [--pull] [--backup] [--bot-only]   Build & deploy latest containers
 
-Logs & Auditing:
-  logs [--bot|--db|--file] [--errors]       Stream or filter logs
+Logs & Telemetry (scripts/logs/):
+  logs [--bot|--db|--file|--metrics]        Stream or filter logs
+  logs --metrics-csv                        Export telemetry log as CSV
   logs --grep <pattern>                     Search logs by user/channel/keyword
   logs --export                             Bundle logs into a .tar.gz archive
 
-Maintenance & Health:
+Maintenance & Health (scripts/ops/):
   status | health                           Full EC2, Docker, and /health report
   restart [all|bot|db]                      Gracefully restart containers
   start | stop                              Start or stop the Docker stack
@@ -69,7 +70,7 @@ Maintenance & Health:
   prune                                     Reclaim EC2 disk space & build cache
   vacuum                                    Run PostgreSQL VACUUM (ANALYZE)
 
-Database & Backups:
+Database & Backups (scripts/db/):
   backup                                    Create compressed PostgreSQL dump
   db-list                                   List available backups in ./backups/
   restore <file>                            Safely restore a database backup
@@ -77,7 +78,7 @@ Database & Backups:
   db-summary                                Show row counts & sizes per table
   dbeaver [start|stop|status] [--ssh-only]  Manage remote DBeaver access
 
-EC2 Host Setup & Hardening:
+EC2 Host Setup & Hardening (scripts/ops/):
   check                                     Audit EC2 host, .env, Swap, & Docker
   init-config                               Scaffold .env and config files
   swap                                      Provision 2GB /swapfile (sudo)
@@ -88,4 +89,3 @@ EOF
 		exit 0
 		;;
 esac
-

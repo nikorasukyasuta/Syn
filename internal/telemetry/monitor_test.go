@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"syn/internal/telemetry/procfs"
 )
 
 type mockWriteCloser struct {
@@ -104,8 +106,8 @@ func TestProcParsers(t *testing.T) {
 	if err := os.WriteFile(statFile, []byte("cpu  100 0 100 800 0 0 0 0 0 0\n"), 0600); err != nil {
 		t.Fatalf("failed writing mock stat: %v", err)
 	}
-	tracker := &cpuTracker{}
-	firstPct := tracker.sampleCPUPercent(statFile)
+	tracker := procfs.NewCPUTracker()
+	firstPct := tracker.SampleCPUPercent(statFile)
 	if firstPct != 0 {
 		t.Fatalf("expected 0 on initial baseline sample, got %v", firstPct)
 	}
@@ -114,7 +116,7 @@ func TestProcParsers(t *testing.T) {
 	if err := os.WriteFile(statFile, []byte("cpu  150 0 150 900 0 0 0 0 0 0\n"), 0600); err != nil {
 		t.Fatalf("failed updating mock stat: %v", err)
 	}
-	secondPct := tracker.sampleCPUPercent(statFile)
+	secondPct := tracker.SampleCPUPercent(statFile)
 	if secondPct != 50 {
 		t.Fatalf("expected 50%% CPU utilization, got %v", secondPct)
 	}

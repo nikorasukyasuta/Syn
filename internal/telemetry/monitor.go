@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"syn/internal/logging"
+	"syn/internal/telemetry/governor"
+	"syn/internal/telemetry/procfs"
 )
 
 const (
@@ -25,10 +27,6 @@ const (
 	// DefaultMaxHistorySamples is the number of recent samples retained in the in-memory ring cache
 	// for real-time querying by the /health command and /metrics web endpoint.
 	DefaultMaxHistorySamples = 240
-
-	// cpuDutyCycleMultiplier is 100x (100% / 1.0% = 100): if a telemetry operation takes D ns of CPU
-	// work, the monitor enforces at least 99*D ns of idle cooldown so CPU usage never exceeds 1.0%.
-	cpuDutyCycleMultiplier = 100
 )
 
 // Config defines configuration parameters for the system resource telemetry monitor and cache.
@@ -58,26 +56,22 @@ func DefaultConfig() Config {
 // Monitor samples system, Go runtime, database pool, queue, and mutex usage into a thread-safe
 // in-memory cache and periodically flushes buffered samples to a dedicated rotating JSON Lines
 // file (metrics.jsonl) for time-series graphing and monitoring.
-// It enforces a strict <= 1.0% CPU utilization budget via lock-free runtime/metrics, stack-buffer
-// /proc parsing, and an adaptive duty-cycle governor.
+// It enforces a strict <= 1.0% CPU utilization budget via governor.BudgetGovernor.
 type Monitor struct {
 	cfg           Config
 	writer        io.WriteCloser
 	logger        *slog.Logger
-	cpu           *cpuTracker
+	cpu           *procfs.CPUTracker
+	gov           *governor.BudgetGovernor
 	dbProvider    DBStatsProvider
 	queueProvider QueueStatsProvider
 	lockProvider  LockStatsProvider
 
-	mu                sync.RWMutex
-	pendingBuffer     []ResourceSample
-	history           []ResourceSample
-	totalFlushed      uint64
-	lastFlushTime     time.Time
-	startedAt         time.Time
-	totalWorkNs       int64
-	nextAllowedSample time.Time
-	throttledCount    uint64
+	mu            sync.RWMutex
+	pendingBuffer []ResourceSample
+	history       []ResourceSample
+	totalFlushed  uint64
+	lastFlushTime time.Time
 
 	stopChan chan struct{}
 	stopOnce sync.Once
@@ -152,21 +146,20 @@ func NewMonitorWithWriter(
 		cfg.MaxHistorySamples = DefaultMaxHistorySamples
 	}
 
-	cpu := &cpuTracker{}
-	// Seed initial CPU jiffies baseline so the next sample computes a valid delta
-	_ = cpu.sampleCPUPercent("/proc/stat")
+	cpu := procfs.NewCPUTracker()
+	_ = cpu.SampleCPUPercent("/proc/stat")
 
 	return &Monitor{
 		cfg:           cfg,
 		writer:        writer,
 		logger:        logger,
 		cpu:           cpu,
+		gov:           governor.NewBudgetGovernor(),
 		dbProvider:    dbProvider,
 		queueProvider: queueProvider,
 		lockProvider:  lockProvider,
 		pendingBuffer: make([]ResourceSample, 0, 16),
 		history:       make([]ResourceSample, 0, cfg.MaxHistorySamples),
-		startedAt:     time.Now().UTC(),
 		stopChan:      make(chan struct{}),
 	}
 }
@@ -241,21 +234,9 @@ func (m *Monitor) Stop() error {
 // sample in O(1) without performing any I/O or runtime reads.
 func (m *Monitor) SampleBounded() (ResourceSample, bool) {
 	now := time.Now().UTC()
-
-	m.mu.Lock()
-	if len(m.history) > 0 {
-		elapsedNs := now.Sub(m.startedAt).Nanoseconds()
-		withinCooldown := now.Before(m.nextAllowedSample)
-		overBudget := elapsedNs > 0 && (float64(m.totalWorkNs)/float64(elapsedNs))*100.0 >= MaxCPUPercentBudget
-		if withinCooldown || overBudget {
-			m.throttledCount++
-			cached := m.history[len(m.history)-1]
-			m.mu.Unlock()
-			return cached, false
-		}
+	if cached, hasHistory := m.Latest(); hasHistory && !m.gov.Allow(now) {
+		return cached, false
 	}
-	m.mu.Unlock()
-
 	return m.SampleNow(), true
 }
 
@@ -264,33 +245,17 @@ func (m *Monitor) SampleBounded() (ResourceSample, bool) {
 // to both the pending flush buffer and the bounded in-memory history cache.
 func (m *Monitor) SampleNow() ResourceSample {
 	start := time.Now().UTC()
-	currentMonCPU := m.MonitorCPUPercent()
+	currentMonCPU := m.gov.CPUPercent()
 
 	sample := collectRuntimeSample(start, m.cpu, currentMonCPU, m.dbProvider, m.queueProvider, m.lockProvider)
 	workDur := time.Since(start)
-	if workDur <= 0 {
-		workDur = time.Microsecond
-	}
+	sample.MonitorCPUPct = m.gov.RecordWork(start, workDur)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.totalWorkNs += workDur.Nanoseconds()
-	m.nextAllowedSample = start.Add(workDur * cpuDutyCycleMultiplier)
-
-	// Recompute monitor overhead percentage after recording this sample's work
-	elapsedNs := time.Since(m.startedAt).Nanoseconds()
-	if elapsedNs > 0 {
-		pct := round2((float64(m.totalWorkNs) / float64(elapsedNs)) * 100.0)
-		if pct > MaxCPUPercentBudget {
-			pct = MaxCPUPercentBudget
-		}
-		sample.MonitorCPUPct = pct
-	}
-
 	m.pendingBuffer = append(m.pendingBuffer, sample)
 	if len(m.history) >= m.cfg.MaxHistorySamples {
-		// Shift ring buffer to retain the most recent MaxHistorySamples entries
 		copy(m.history, m.history[1:])
 		m.history[len(m.history)-1] = sample
 	} else {
@@ -326,7 +291,6 @@ func (m *Monitor) Flush() (int, error) {
 
 	if m.writer != nil {
 		if _, err := m.writer.Write(buf.Bytes()); err != nil {
-			// Restore batch to the front of pendingBuffer so samples are not lost on transient disk errors
 			m.mu.Lock()
 			m.pendingBuffer = append(batch, m.pendingBuffer...)
 			m.mu.Unlock()
@@ -336,10 +300,9 @@ func (m *Monitor) Flush() (int, error) {
 
 	workDur := time.Since(start)
 	now := time.Now().UTC()
+	_ = m.gov.RecordWork(now, workDur)
 
 	m.mu.Lock()
-	m.totalWorkNs += workDur.Nanoseconds()
-	m.nextAllowedSample = now.Add(workDur * cpuDutyCycleMultiplier)
 	m.totalFlushed += uint64(len(batch))
 	m.lastFlushTime = now
 	m.mu.Unlock()
@@ -356,18 +319,7 @@ func (m *Monitor) Flush() (int, error) {
 // MonitorCPUPercent returns the percentage of wall-clock time spent executing telemetry
 // collection and disk flushing since the monitor was initialized (strictly <= 1.0%).
 func (m *Monitor) MonitorCPUPercent() float64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	elapsedNs := time.Since(m.startedAt).Nanoseconds()
-	if elapsedNs <= 0 || m.totalWorkNs <= 0 {
-		return 0
-	}
-	pct := round2((float64(m.totalWorkNs) / float64(elapsedNs)) * 100.0)
-	if pct > MaxCPUPercentBudget {
-		return MaxCPUPercentBudget
-	}
-	return pct
+	return m.gov.CPUPercent()
 }
 
 // Latest returns the most recently collected ResourceSample and true, or an empty struct and false if none exist.

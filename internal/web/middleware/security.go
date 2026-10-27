@@ -1,0 +1,17 @@
+// Package middleware provides HTTP middleware for the Syn web portal.
+package middleware
+
+import "net/http"
+
+// SecurityHeaders wraps an http.Handler with standard production security headers
+// (nosniff, frame denial, XSS block, and strict referrer policy).
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		next.ServeHTTP(w, r)
+	})
+}
+
