@@ -33,6 +33,7 @@ type ReactionRoleRepository interface {
 	UpsertMapping(ctx context.Context, rr *ReactionRole) error
 	GetMapping(ctx context.Context, guildID, messageID, emojiAPIName string) (*ReactionRole, error)
 	ListByMessage(ctx context.Context, guildID, messageID string) ([]*ReactionRole, error)
+	ListByGuild(ctx context.Context, guildID string) ([]*ReactionRole, error)
 	DeleteMapping(ctx context.Context, guildID, messageID, emojiAPIName string) error
 	SavePanel(ctx context.Context, panel *ReactionPanel) error
 	GetPanel(ctx context.Context, guildID, messageID string) (*ReactionPanel, error)

@@ -55,24 +55,14 @@ func (s *IDVerificationService) IsStaff(callerRoles []string) bool {
 	return false
 }
 
-// CheckCanOpenRequest verifies that a member is not already 18+ verified and does not already have
-// an open pending ID verification channel.
+// CheckCanOpenRequest verifies that a member does not already have an open pending ID verification channel
+// and is not already verified.
 func (s *IDVerificationService) CheckCanOpenRequest(
 	ctx context.Context,
 	guildID, userID string,
 ) (*domain.IDVerificationRequest, error) {
 	if guildID == "" || userID == "" {
 		return nil, domain.ErrInvalidInput
-	}
-
-	if s.verifyRepo != nil {
-		existing, err := s.verifyRepo.GetByUserID(ctx, guildID, userID)
-		if err != nil {
-			return nil, err
-		}
-		if existing != nil && existing.IsVerified {
-			return nil, domain.ErrAlreadyVerified
-		}
 	}
 
 	if s.idRepo != nil {
@@ -82,6 +72,16 @@ func (s *IDVerificationService) CheckCanOpenRequest(
 		}
 		if pending != nil && pending.Status == domain.IDVerificationStatusPending {
 			return pending, domain.ErrIDVerifyRequestAlreadyOpen
+		}
+	}
+
+	if s.verifyRepo != nil {
+		existing, err := s.verifyRepo.GetByUserID(ctx, guildID, userID)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil && existing.IsVerified {
+			return nil, domain.ErrAlreadyVerified
 		}
 	}
 

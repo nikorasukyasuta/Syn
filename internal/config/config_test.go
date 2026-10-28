@@ -37,12 +37,13 @@ func clearEnv(t *testing.T, keys ...string) {
 }
 
 func TestConfig_Load_SuccessWithDatabaseURL(t *testing.T) {
-	clearEnv(t, "DISCORD_TOKEN", "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DATABASE_URL", "ASSETS_DIR", "LOG_LEVEL", "LOG_FILE_PATH", "LOG_MAX_SIZE_MB", "LOG_MAX_BACKUPS", "LOG_MAX_AGE_DAYS", "LOG_FORMAT", "DISCORD_TICKET_CATEGORY_ID", "DISCORD_TICKET_LOG_CHANNEL_ID", "DISCORD_IDS_FILE")
+	clearEnv(t, "DISCORD_TOKEN", "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_ID_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DATABASE_URL", "ASSETS_DIR", "LOG_LEVEL", "LOG_FILE_PATH", "LOG_MAX_SIZE_MB", "LOG_MAX_BACKUPS", "LOG_MAX_AGE_DAYS", "LOG_FORMAT", "DISCORD_TICKET_CATEGORY_ID", "DISCORD_TICKET_LOG_CHANNEL_ID", "DISCORD_IDS_FILE")
 
 	setEnv(t, "DISCORD_IDS_FILE", "/non_existent_test_ids.json")
 	setEnv(t, "DISCORD_TOKEN", "token_123")
 	setEnv(t, "DISCORD_GUILD_ID", "guild_456")
 	setEnv(t, "DISCORD_VERIFIED_ROLE_ID", "role_789")
+	setEnv(t, "DISCORD_ID_VERIFIED_ROLE_ID", "role_id_verified_999")
 	setEnv(t, "DISCORD_UNVERIFIED_ROLE_ID", "role_unverified_000")
 	setEnv(t, "ALLOWED_VERIFIER_ROLE_IDS", "role_staff, role_helper")
 	setEnv(t, "DATABASE_URL", "postgres://user:pass@localhost:5432/db?sslmode=disable")
@@ -69,6 +70,9 @@ func TestConfig_Load_SuccessWithDatabaseURL(t *testing.T) {
 	}
 	if cfg.VerifiedRoleID != "role_789" {
 		t.Errorf("expected verified role role_789, got %s", cfg.VerifiedRoleID)
+	}
+	if cfg.IDVerifiedRoleID != "role_id_verified_999" {
+		t.Errorf("expected ID verified role role_id_verified_999, got %s", cfg.IDVerifiedRoleID)
 	}
 	if cfg.UnverifiedRoleID != "role_unverified_000" {
 		t.Errorf("expected unverified role role_unverified_000, got %s", cfg.UnverifiedRoleID)
@@ -106,12 +110,13 @@ func TestConfig_Load_SuccessWithDatabaseURL(t *testing.T) {
 }
 
 func TestConfig_Load_ConstructDatabaseURL(t *testing.T) {
-	clearEnv(t, "DISCORD_TOKEN", "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DATABASE_URL", "DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME", "DB_SSLMODE", "ASSETS_DIR", "DISCORD_IDS_FILE")
+	clearEnv(t, "DISCORD_TOKEN", "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_ID_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DATABASE_URL", "DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME", "DB_SSLMODE", "ASSETS_DIR", "DISCORD_IDS_FILE")
 
 	setEnv(t, "DISCORD_IDS_FILE", "/non_existent_test_ids.json")
 	setEnv(t, "DISCORD_TOKEN", "tok")
 	setEnv(t, "DISCORD_GUILD_ID", "gid")
 	setEnv(t, "DISCORD_VERIFIED_ROLE_ID", "vrole")
+	setEnv(t, "DISCORD_ID_VERIFIED_ROLE_ID", "idvrole")
 	setEnv(t, "DISCORD_UNVERIFIED_ROLE_ID", "uvrole")
 	setEnv(t, "ALLOWED_VERIFIER_ROLE_IDS", "staff")
 	setEnv(t, "DB_USER", "admin")
@@ -148,6 +153,7 @@ func TestConfig_Load_FromDiscordIDsJSON(t *testing.T) {
 		"guild_id": "file_guild_123",
 		"roles": {
 			"verified_role_id": "file_verified_456",
+			"id_verified_role_id": "file_id_verified_555",
 			"unverified_role_id": "file_unverified_789",
 			"staff_role_ids": ["file_staff_1", "file_staff_2"]
 		},
@@ -163,7 +169,7 @@ func TestConfig_Load_FromDiscordIDsJSON(t *testing.T) {
 	_ = tmpFile.Close()
 
 	// Clear all role/guild IDs from environment
-	clearEnv(t, "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DISCORD_TICKET_CATEGORY_ID", "DISCORD_TICKET_LOG_CHANNEL_ID", "STAFF_ALERT_CHANNEL_ID")
+	clearEnv(t, "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_ID_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DISCORD_TICKET_CATEGORY_ID", "DISCORD_TICKET_LOG_CHANNEL_ID", "STAFF_ALERT_CHANNEL_ID")
 
 	// Set only token, db, and point to our external IDs file
 	setEnv(t, "DISCORD_TOKEN", "test_bot_token")
@@ -180,6 +186,9 @@ func TestConfig_Load_FromDiscordIDsJSON(t *testing.T) {
 	}
 	if cfg.VerifiedRoleID != "file_verified_456" {
 		t.Errorf("expected file_verified_456, got %s", cfg.VerifiedRoleID)
+	}
+	if cfg.IDVerifiedRoleID != "file_id_verified_555" {
+		t.Errorf("expected file_id_verified_555, got %s", cfg.IDVerifiedRoleID)
 	}
 	if cfg.UnverifiedRoleID != "file_unverified_789" {
 		t.Errorf("expected file_unverified_789, got %s", cfg.UnverifiedRoleID)
@@ -213,6 +222,7 @@ func TestConfig_ValidationErrors(t *testing.T) {
 				DiscordToken:     "",
 				GuildID:          "g",
 				VerifiedRoleID:   "v",
+				IDVerifiedRoleID: "idv",
 				UnverifiedRoleID: "uv",
 				StaffRoleIDs:     []string{"s"},
 				DatabaseURL:      "db",
@@ -225,6 +235,7 @@ func TestConfig_ValidationErrors(t *testing.T) {
 				DiscordToken:     "t",
 				GuildID:          "",
 				VerifiedRoleID:   "v",
+				IDVerifiedRoleID: "idv",
 				UnverifiedRoleID: "uv",
 				StaffRoleIDs:     []string{"s"},
 				DatabaseURL:      "db",
@@ -237,6 +248,7 @@ func TestConfig_ValidationErrors(t *testing.T) {
 				DiscordToken:     "t",
 				GuildID:          "g",
 				VerifiedRoleID:   "",
+				IDVerifiedRoleID: "idv",
 				UnverifiedRoleID: "uv",
 				StaffRoleIDs:     []string{"s"},
 				DatabaseURL:      "db",
@@ -244,11 +256,25 @@ func TestConfig_ValidationErrors(t *testing.T) {
 			wantErrMsg: "verified_role_id is required (specify in config/discord_ids.json or DISCORD_VERIFIED_ROLE_ID)",
 		},
 		{
+			name: "Missing ID Verified Role ID",
+			cfg: config.Config{
+				DiscordToken:     "t",
+				GuildID:          "g",
+				VerifiedRoleID:   "v",
+				IDVerifiedRoleID: "",
+				UnverifiedRoleID: "uv",
+				StaffRoleIDs:     []string{"s"},
+				DatabaseURL:      "db",
+			},
+			wantErrMsg: "id_verified_role_id is required (specify in config/discord_ids.json or DISCORD_ID_VERIFIED_ROLE_ID)",
+		},
+		{
 			name: "Missing Unverified Role ID",
 			cfg: config.Config{
 				DiscordToken:     "t",
 				GuildID:          "g",
 				VerifiedRoleID:   "v",
+				IDVerifiedRoleID: "idv",
 				UnverifiedRoleID: "",
 				StaffRoleIDs:     []string{"s"},
 				DatabaseURL:      "db",
@@ -261,6 +287,7 @@ func TestConfig_ValidationErrors(t *testing.T) {
 				DiscordToken:     "t",
 				GuildID:          "g",
 				VerifiedRoleID:   "v",
+				IDVerifiedRoleID: "idv",
 				UnverifiedRoleID: "uv",
 				StaffRoleIDs:     []string{},
 				DatabaseURL:      "db",
@@ -273,6 +300,7 @@ func TestConfig_ValidationErrors(t *testing.T) {
 				DiscordToken:     "t",
 				GuildID:          "g",
 				VerifiedRoleID:   "v",
+				IDVerifiedRoleID: "idv",
 				UnverifiedRoleID: "uv",
 				StaffRoleIDs:     []string{"s"},
 				DatabaseURL:      "",
@@ -295,12 +323,13 @@ func TestConfig_ValidationErrors(t *testing.T) {
 }
 
 func TestConfig_Load_WebCustomSettings(t *testing.T) {
-	clearEnv(t, "DISCORD_TOKEN", "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DATABASE_URL", "WEB_PORT", "WEB_BASE_URL", "DISCORD_IDS_FILE")
+	clearEnv(t, "DISCORD_TOKEN", "DISCORD_GUILD_ID", "DISCORD_VERIFIED_ROLE_ID", "DISCORD_ID_VERIFIED_ROLE_ID", "DISCORD_UNVERIFIED_ROLE_ID", "ALLOWED_VERIFIER_ROLE_IDS", "DATABASE_URL", "WEB_PORT", "WEB_BASE_URL", "DISCORD_IDS_FILE")
 
 	setEnv(t, "DISCORD_IDS_FILE", "/non_existent_test_ids.json")
 	setEnv(t, "DISCORD_TOKEN", "token_123")
 	setEnv(t, "DISCORD_GUILD_ID", "guild_456")
 	setEnv(t, "DISCORD_VERIFIED_ROLE_ID", "role_789")
+	setEnv(t, "DISCORD_ID_VERIFIED_ROLE_ID", "role_id_verified_999")
 	setEnv(t, "DISCORD_UNVERIFIED_ROLE_ID", "role_unverified_000")
 	setEnv(t, "ALLOWED_VERIFIER_ROLE_IDS", "role_staff")
 	setEnv(t, "DATABASE_URL", "postgres://user:pass@localhost:5432/db?sslmode=disable")

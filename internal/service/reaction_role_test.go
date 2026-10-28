@@ -34,6 +34,13 @@ func (m *mockReactionRoleRepo) ListByMessage(_ context.Context, _, _ string) ([]
 	return nil, nil
 }
 
+func (m *mockReactionRoleRepo) ListByGuild(_ context.Context, _ string) ([]*domain.ReactionRole, error) {
+	if m.mapping != nil {
+		return []*domain.ReactionRole{m.mapping}, nil
+	}
+	return nil, nil
+}
+
 func (m *mockReactionRoleRepo) DeleteMapping(_ context.Context, _, _, _ string) error {
 	m.mapping = nil
 	return nil

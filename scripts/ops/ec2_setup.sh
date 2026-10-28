@@ -77,6 +77,11 @@ case "$COMMAND" in
 
 		if [[ -f config/discord_ids.json ]]; then
 			echo " ✅ config/discord_ids.json is present"
+			if grep -q '"id_verified_role_id"' config/discord_ids.json 2>/dev/null; then
+				echo " ✅ id_verified_role_id is configured in config/discord_ids.json"
+			else
+				echo " ⚠️  id_verified_role_id is missing from config/discord_ids.json (required for 18+ ID verification)"
+			fi
 		else
 			echo " ⚠️  config/discord_ids.json not found (using environment variables or run '$0 init-config')"
 		fi

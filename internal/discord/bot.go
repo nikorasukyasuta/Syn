@@ -297,7 +297,7 @@ func (b *Bot) Start() error {
 	// Sweep server to ensure all unassigned human members receive the unverified role
 	if b.memberHandler != nil && b.cfg.UnverifiedRoleID != "" {
 		go func() {
-			if err := b.memberHandler.SyncUnassignedMembers(b.session, b.cfg.VerifiedRoleID); err != nil {
+			if err := b.memberHandler.SyncUnassignedMembers(b.session, b.cfg.VerifiedRoleID, b.cfg.IDVerifiedRoleID); err != nil {
 				b.logger.Warn("unverified member sync sweep completed with warning", "error", err)
 			}
 		}()

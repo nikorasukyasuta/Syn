@@ -40,9 +40,17 @@ func (c *ResourceCache) SetRole(id, name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// If the role was previously known under a different name, delete old reverse mapping
-	if oldName, exists := c.rolesByID[id]; exists {
-		delete(c.rolesByName, normalize(oldName))
+	if oldName, exists := c.rolesByID[id]; exists && normalize(oldName) != normalize(name) {
+		normOld := normalize(oldName)
+		if c.rolesByName[normOld] == id {
+			delete(c.rolesByName, normOld)
+			for otherID, otherName := range c.rolesByID {
+				if otherID != id && normalize(otherName) == normOld {
+					c.rolesByName[normOld] = otherID
+					break
+				}
+			}
+		}
 	}
 
 	c.rolesByID[id] = name
@@ -55,9 +63,34 @@ func (c *ResourceCache) RemoveRole(id string) {
 	defer c.mu.Unlock()
 
 	if name, exists := c.rolesByID[id]; exists {
-		delete(c.rolesByName, normalize(name))
+		normName := normalize(name)
 		delete(c.rolesByID, id)
+		if c.rolesByName[normName] == id {
+			delete(c.rolesByName, normName)
+			for otherID, otherName := range c.rolesByID {
+				if normalize(otherName) == normName {
+					c.rolesByName[normName] = otherID
+					break
+				}
+			}
+		}
 	}
+}
+
+// GetRoleIDsByName returns all Role IDs that match the given role name (case-insensitive),
+// supporting servers where multiple roles share the same display name with different colors.
+func (c *ResourceCache) GetRoleIDsByName(name string) []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	target := normalize(name)
+	var ids []string
+	for id, rName := range c.rolesByID {
+		if normalize(rName) == target {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // GetRoleID returns the Role ID for a given role name (case-insensitive).

@@ -1,0 +1,63 @@
+name: CI — Test Gate for Master Merge
+
+on:
+  pull_request:
+    branches:
+      - master
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  merge_group:
+    branches:
+      - master
+      - main
+  push:
+    branches:
+      - master
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test & Verify All Packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Go Runtime
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify Go Modules
+        run: go mod verify
+
+      - name: Run Static Analysis (go vet)
+        run: go vet ./...
+
+      - name: Validate EC2 Helper Scripts Syntax
+        run: bash -n scripts/*.sh scripts/*/*.sh
+
+      - name: Run All Unit & Race Tests Across Every Package
+        run: |
+          go test -v -race -count=1 -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out | tail -n 1
+
+      - name: Verify Production Binary Compilation
+        run: |
+          CGO_ENABLED=0 go build -ldflags="-w -s" -o /tmp/syn ./cmd/bot/main.go
+          rm -f /tmp/syn
+

@@ -110,6 +110,7 @@ func main() {
 
 	rrRepo := postgres.NewReactionRoleRepo(dbPool)
 	rrSvc := service.NewReactionRoleService(rrRepo, verifyRepo, auditRepo, assetStore, cfg.StaffRoleIDs, cfg.VerifiedRoleID, logger)
+	rrSvc.AddProtectedRoles(cfg.IDVerifiedRoleID, cfg.UnverifiedRoleID)
 	rrHandler := handlers.NewReactionRoleHandler(rrSvc, logger)
 	rrHandler.SetLockManager(lockMgr)
 

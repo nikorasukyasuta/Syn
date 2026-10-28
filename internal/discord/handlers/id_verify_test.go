@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -159,6 +160,7 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 	cfg := &config.Config{
 		GuildID:          "guild_1",
 		VerifiedRoleID:   "role_verified",
+		IDVerifiedRoleID: "role_id_verified",
 		UnverifiedRoleID: "role_unverified",
 		StaffRoleIDs:     []string{"role_staff"},
 	}
@@ -166,7 +168,28 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 	svc := service.NewIDVerificationService(idRepo, vRepo, nil, cfg.StaffRoleIDs, logger)
 	h := handlers.NewIDVerifyHandler(svc, cfg, nil, lockMgr, logger)
 
-	session := newMockSession(http.StatusOK, `{"id": "ch_id_verify_100"}`)
+	var roleMu sync.Mutex
+	grantedRoles := make(map[string]bool)
+	session, _ := discordgo.New("Bot test_token")
+	session.StateEnabled = true
+	session.State.User = &discordgo.User{ID: "bot_id"}
+	session.Client = &http.Client{
+		Transport: mockRoundTripper(func(req *http.Request) (*http.Response, error) {
+			if req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/members/applicant_1/roles/") {
+				parts := strings.Split(req.URL.Path, "/roles/")
+				if len(parts) == 2 {
+					roleMu.Lock()
+					grantedRoles[parts[1]] = true
+					roleMu.Unlock()
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"id": "ch_id_verify_100"}`)),
+			}, nil
+		}),
+	}
 
 	// 1. Non-staff member attempting to invoke /id-verify panel is blocked
 	unauthCmd := &discordgo.InteractionCreate{
@@ -297,6 +320,14 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 		t.Fatal("expected applicant_1 to be verified after staff approval")
 	}
 
+	roleMu.Lock()
+	gotVerified := grantedRoles["role_verified"]
+	gotIDVerified := grantedRoles["role_id_verified"]
+	roleMu.Unlock()
+	if !gotVerified || !gotIDVerified {
+		t.Fatalf("expected both role_verified (%v) and role_id_verified (%v) to be granted upon ID verification approval", gotVerified, gotIDVerified)
+	}
+
 	// 6. Staff runs /id-verify status for applicant_1
 	statusCmd := &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
@@ -365,6 +396,26 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 	verRevoked, _ := vRepo.GetByUserID(context.Background(), "guild_1", "applicant_1")
 	if verRevoked == nil || verRevoked.IsVerified {
 		t.Fatal("expected applicant_1 verification to be revoked")
+	}
+
+	// 8. Member who already holds the dedicated IDVerifiedRoleID is blocked from opening a duplicate session
+	alreadyIDVerifiedClick := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			ID:      "int_already_idv",
+			GuildID: "guild_1",
+			Type:    discordgo.InteractionMessageComponent,
+			Member: &discordgo.Member{
+				User:  &discordgo.User{ID: "applicant_idv", Username: "alreadyidv"},
+				Roles: []string{"role_verified", "role_id_verified"},
+			},
+			Data: discordgo.MessageComponentInteractionData{
+				CustomID: "btn_id_verify_start",
+			},
+		},
+	}
+	h.HandleComponentInteraction(session, alreadyIDVerifiedClick)
+	if dupReq, _ := idRepo.GetPendingRequestByUser(context.Background(), "guild_1", "applicant_idv"); dupReq != nil {
+		t.Fatalf("expected member already holding role_id_verified to not create a new request, got %+v", dupReq)
 	}
 }
 

@@ -290,3 +290,46 @@ func TestReactionRoleHandler_CheckRoleHierarchy(t *testing.T) {
 		t.Errorf("expected ok when state is uninitialized")
 	}
 }
+
+func TestDisambiguateDuplicateNamedRole(t *testing.T) {
+	t.Parallel()
+
+	guildRoles := []*discordgo.Role{
+		{ID: "role_switch_red", Name: "Switch", Color: 0xE74C3C},
+		{ID: "role_switch_blue", Name: "Switch", Color: 0x3498DB},
+		{ID: "role_unique", Name: "UniqueRole", Color: 0x2ECC71},
+	}
+
+	// Case 1: Neither duplicate role is bound yet -> keeps selected role_switch_red
+	resolved, changed := DisambiguateDuplicateNamedRole(guildRoles, nil, "panel_1", "role_switch_red")
+	if changed || resolved != "role_switch_red" {
+		t.Fatalf("expected role_switch_red unchanged when no roles bound, got resolved=%s changed=%v", resolved, changed)
+	}
+
+	// Case 2: role_switch_red is already bound on panel_1. Staff adds second "Switch" role to panel_2,
+	// and Discord's slash-command input defaults @Switch to role_switch_red -> automatically disambiguates to role_switch_blue!
+	existingBindings := []*domain.ReactionRole{
+		{
+			GuildID:   "guild_1",
+			MessageID: "panel_1",
+			RoleID:    "role_switch_red",
+		},
+	}
+	resolved2, changed2 := DisambiguateDuplicateNamedRole(guildRoles, existingBindings, "panel_2", "role_switch_red")
+	if !changed2 || resolved2 != "role_switch_blue" {
+		t.Fatalf("expected disambiguation to unbound role_switch_blue on panel_2, got resolved=%s changed=%v", resolved2, changed2)
+	}
+
+	// Case 3: Unique role name is never changed even if bound elsewhere
+	existingUnique := []*domain.ReactionRole{
+		{
+			GuildID:   "guild_1",
+			MessageID: "panel_1",
+			RoleID:    "role_unique",
+		},
+	}
+	resolved3, changed3 := DisambiguateDuplicateNamedRole(guildRoles, existingUnique, "panel_2", "role_unique")
+	if changed3 || resolved3 != "role_unique" {
+		t.Fatalf("expected unique role to remain unchanged, got resolved=%s changed=%v", resolved3, changed3)
+	}
+}

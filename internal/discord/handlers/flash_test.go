@@ -97,6 +97,12 @@ func (m *mockFlashRepo) ListPendingMessages(ctx context.Context) ([]*domain.Flas
 	return list, nil
 }
 
+func (m *mockFlashRepo) hasMessage(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.messages[id] != nil
+}
+
 type mockHTTPClient struct {
 	doFunc func(req *http.Request) (*http.Response, error)
 }
@@ -319,7 +325,7 @@ func TestFlashHandler_HandleMessageCreate(t *testing.T) {
 
 	// Give a moment for goroutine
 	time.Sleep(50 * time.Millisecond)
-	if repo.messages["msg_spoilered"] == nil {
+	if !repo.hasMessage("msg_spoilered") {
 		t.Errorf("expected already-spoilered message 'msg_spoilered' to be scheduled in repository")
 	}
 
@@ -347,7 +353,7 @@ func TestFlashHandler_HandleMessageCreate(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Check if re-posted message was scheduled
-	if repo.messages["msg_reposted_456"] == nil {
+	if !repo.hasMessage("msg_reposted_456") {
 		t.Errorf("expected reposted spoilered message 'msg_reposted_456' to be scheduled in repository")
 	}
 
@@ -363,7 +369,7 @@ func TestFlashHandler_HandleMessageCreate(t *testing.T) {
 	}
 	handler.HandleMessageCreate(session, textCommentMsg)
 	time.Sleep(50 * time.Millisecond)
-	if repo.messages["msg_text_comment"] != nil {
+	if repo.hasMessage("msg_text_comment") {
 		t.Errorf("expected text-only comment 'msg_text_comment' to be deleted immediately and NOT scheduled")
 	}
 
@@ -386,7 +392,7 @@ func TestFlashHandler_HandleMessageCreate(t *testing.T) {
 	}
 	handler.HandleMessageCreate(session, nonPhotoAttachmentMsg)
 	time.Sleep(50 * time.Millisecond)
-	if repo.messages["msg_pdf_file"] != nil {
+	if repo.hasMessage("msg_pdf_file") {
 		t.Errorf("expected non-photo attachment 'msg_pdf_file' to be deleted immediately and NOT scheduled")
 	}
 }

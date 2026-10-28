@@ -13,8 +13,9 @@ import (
 type Config struct {
 	DiscordToken             string
 	GuildID                  string
-	VerifiedRoleID           string
-	UnverifiedRoleID         string
+	VerifiedRoleID           string   // Role ID granted upon standard member verification (/verify-member)
+	IDVerifiedRoleID         string   // Role ID granted upon 18+ photo ID verification (/id-verify)
+	UnverifiedRoleID         string   // Role ID assigned automatically to unverified members on join
 	StaffRoleIDs             []string // Holds both Staff and Server Helper Role IDs
 	StaffAlertChannelID      string   // Optional: Channel to send staff notifications/safeword alerts
 	SafewordEmoji            string   // Optional: Reaction emoji that triggers RED (defaults to "🛑")
@@ -42,6 +43,7 @@ type Config struct {
 type DiscordIDs struct {
 	GuildID             string   `json:"guild_id"`
 	VerifiedRoleID      string   `json:"verified_role_id"`
+	IDVerifiedRoleID    string   `json:"id_verified_role_id"`
 	UnverifiedRoleID    string   `json:"unverified_role_id"`
 	StaffRoleIDs        []string `json:"staff_role_ids"`
 	TicketCategoryID    string   `json:"ticket_category_id"`
@@ -51,6 +53,7 @@ type DiscordIDs struct {
 	// Supports nested structure: "roles": { ... }, "channels": { ... }, "settings": { ... }
 	Roles struct {
 		VerifiedRoleID   string   `json:"verified_role_id"`
+		IDVerifiedRoleID string   `json:"id_verified_role_id"`
 		UnverifiedRoleID string   `json:"unverified_role_id"`
 		StaffRoleIDs     []string `json:"staff_role_ids"`
 	} `json:"roles"`
@@ -86,6 +89,9 @@ func LoadDiscordIDsFile(filePath string) (*DiscordIDs, error) {
 	// Consolidate nested values into top-level fields if top-level was blank
 	if ids.VerifiedRoleID == "" && ids.Roles.VerifiedRoleID != "" {
 		ids.VerifiedRoleID = ids.Roles.VerifiedRoleID
+	}
+	if ids.IDVerifiedRoleID == "" && ids.Roles.IDVerifiedRoleID != "" {
+		ids.IDVerifiedRoleID = ids.Roles.IDVerifiedRoleID
 	}
 	if ids.UnverifiedRoleID == "" && ids.Roles.UnverifiedRoleID != "" {
 		ids.UnverifiedRoleID = ids.Roles.UnverifiedRoleID
@@ -137,6 +143,7 @@ func Load() (*Config, error) {
 
 	guildID := ""
 	verifiedRoleID := ""
+	idVerifiedRoleID := ""
 	unverifiedRoleID := ""
 	var staffRoles []string
 	ticketCat := ""
@@ -146,6 +153,7 @@ func Load() (*Config, error) {
 	if fileIDs != nil {
 		guildID = fileIDs.GuildID
 		verifiedRoleID = fileIDs.VerifiedRoleID
+		idVerifiedRoleID = fileIDs.IDVerifiedRoleID
 		unverifiedRoleID = fileIDs.UnverifiedRoleID
 		staffRoles = fileIDs.StaffRoleIDs
 		ticketCat = fileIDs.TicketCategoryID
@@ -159,6 +167,12 @@ func Load() (*Config, error) {
 	}
 	if verifiedRoleID == "" {
 		verifiedRoleID = os.Getenv("DISCORD_VERIFIED_ROLE_ID")
+	}
+	if idVerifiedRoleID == "" {
+		idVerifiedRoleID = os.Getenv("DISCORD_ID_VERIFIED_ROLE_ID")
+		if idVerifiedRoleID == "" {
+			idVerifiedRoleID = os.Getenv("ID_VERIFIED_ROLE_ID")
+		}
 	}
 	if unverifiedRoleID == "" {
 		unverifiedRoleID = os.Getenv("DISCORD_UNVERIFIED_ROLE_ID")
@@ -283,6 +297,7 @@ func Load() (*Config, error) {
 		DiscordToken:             os.Getenv("DISCORD_TOKEN"),
 		GuildID:                  guildID,
 		VerifiedRoleID:           verifiedRoleID,
+		IDVerifiedRoleID:         idVerifiedRoleID,
 		UnverifiedRoleID:         unverifiedRoleID,
 		StaffRoleIDs:             staffRoles,
 		StaffAlertChannelID:      staffAlertChan,
@@ -326,6 +341,9 @@ func (c *Config) Validate() error {
 	}
 	if c.VerifiedRoleID == "" {
 		return errors.New("verified_role_id is required (specify in config/discord_ids.json or DISCORD_VERIFIED_ROLE_ID)")
+	}
+	if c.IDVerifiedRoleID == "" {
+		return errors.New("id_verified_role_id is required (specify in config/discord_ids.json or DISCORD_ID_VERIFIED_ROLE_ID)")
 	}
 	if c.UnverifiedRoleID == "" {
 		return errors.New("unverified_role_id is required (specify in config/discord_ids.json or DISCORD_UNVERIFIED_ROLE_ID)")

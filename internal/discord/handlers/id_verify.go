@@ -269,16 +269,26 @@ func (h *IDVerifyHandler) handleCommandRevoke(
 		return
 	}
 
-	// Remove Verified role and restore Unverified role in Discord
-	if h.cfg.VerifiedRoleID != "" {
-		_ = s.GuildMemberRoleRemove(guildID, targetUserID, h.cfg.VerifiedRoleID)
+	// Remove 18+ ID Verified role in Discord
+	idRoleID := h.idVerifiedRoleID()
+	if idRoleID != "" {
+		_ = s.GuildMemberRoleRemove(guildID, targetUserID, idRoleID)
 	}
+	// Restore Unverified role only if the member does not hold the standard Verified role
 	if h.cfg.UnverifiedRoleID != "" {
-		_ = s.GuildMemberRoleAdd(guildID, targetUserID, h.cfg.UnverifiedRoleID)
+		hasStandardVerified := false
+		if h.cfg.VerifiedRoleID != "" && h.cfg.VerifiedRoleID != idRoleID {
+			if targetMember, mErr := s.GuildMember(guildID, targetUserID); mErr == nil && targetMember != nil {
+				hasStandardVerified = hasRoleID(targetMember.Roles, h.cfg.VerifiedRoleID)
+			}
+		}
+		if !hasStandardVerified {
+			_ = s.GuildMemberRoleAdd(guildID, targetUserID, h.cfg.UnverifiedRoleID)
+		}
 	}
 
 	h.logIDVerifyEvent(s, guildID, "🚫 18+ Verification Revoked", 0xE74C3C, targetUserID, i.Member.User.ID, reason)
-	h.respondEphemeral(s, i, fmt.Sprintf("✅ Revoked 18+ verification for <@%s>: removed Verified role and restored Unverified role.", targetUserID))
+	h.respondEphemeral(s, i, fmt.Sprintf("✅ Revoked 18+ ID verification for <@%s> and removed their ID Verified role.", targetUserID))
 }
 
 func (h *IDVerifyHandler) handleCommandStatus(
@@ -446,12 +456,14 @@ func (h *IDVerifyHandler) processStartVerification(s *discordgo.Session, i *disc
 		guildID = h.cfg.GuildID
 	}
 
-	// 2. Check if user is already verified or already has an open ID verification request
-	existingReq, err := h.svc.CheckCanOpenRequest(ctx, guildID, caller.ID)
-	if errors.Is(err, domain.ErrAlreadyVerified) {
-		h.sendDeferredFollowup(s, i, "✅ You are already **18+ Verified** in this server!")
+	// 2. Check if user already holds the dedicated ID Verified role or has an open ID verification request
+	idRoleID := h.idVerifiedRoleID()
+	if idRoleID != "" && hasRoleID(i.Member.Roles, idRoleID) {
+		h.sendDeferredFollowup(s, i, "✅ You are already **18+ ID Verified** in this server!")
 		return
 	}
+
+	existingReq, err := h.svc.CheckCanOpenRequest(ctx, guildID, caller.ID)
 	if errors.Is(err, domain.ErrIDVerifyRequestAlreadyOpen) && existingReq != nil {
 		h.sendDeferredFollowup(s, i, fmt.Sprintf(
 			"⚠️ You already have an open 18+ ID verification session in <#%s>. Please upload your verification photo there.",
@@ -459,7 +471,14 @@ func (h *IDVerifyHandler) processStartVerification(s *discordgo.Session, i *disc
 		))
 		return
 	}
-	if err != nil {
+	if errors.Is(err, domain.ErrAlreadyVerified) {
+		// If a separate IDVerifiedRoleID is configured and the member only completed basic verification (/verify-member),
+		// allow them to proceed to obtain their dedicated 18+ ID Verified role.
+		if h.cfg.IDVerifiedRoleID == "" || h.cfg.IDVerifiedRoleID == h.cfg.VerifiedRoleID || hasRoleID(i.Member.Roles, h.cfg.IDVerifiedRoleID) {
+			h.sendDeferredFollowup(s, i, "✅ You are already **18+ ID Verified** in this server!")
+			return
+		}
+	} else if err != nil {
 		h.logger.Error("error validating ID verification eligibility", "error", err, "user_id", caller.ID)
 		h.sendDeferredFollowup(s, i, "❌ An error occurred while validating your verification status. Please try again.")
 		return
@@ -563,15 +582,31 @@ func (h *IDVerifyHandler) executeApprove(
 		}
 	}
 
-	// 2. Grant 18+ Verified role
+	// 2. Grant standard Verified role so the member always receives base verification as well
 	if h.cfg.VerifiedRoleID != "" {
 		if aErr := s.GuildMemberRoleAdd(guildID, ver.DiscordUserID, h.cfg.VerifiedRoleID); aErr != nil {
 			h.logger.Error("failed to assign verified role on ID approve",
 				"guild_id", guildID,
 				"user_id", ver.DiscordUserID,
+				"role_id", h.cfg.VerifiedRoleID,
 				"error", aErr,
 			)
 			h.respondEphemeral(s, i, "⚠️ Database updated, but failed to assign Discord Verified role. Check bot role hierarchy.")
+			return
+		}
+	}
+
+	// 3. Grant dedicated 18+ ID Verified role
+	idRoleID := h.idVerifiedRoleID()
+	if idRoleID != "" && idRoleID != h.cfg.VerifiedRoleID {
+		if aErr := s.GuildMemberRoleAdd(guildID, ver.DiscordUserID, idRoleID); aErr != nil {
+			h.logger.Error("failed to assign ID verified role on ID approve",
+				"guild_id", guildID,
+				"user_id", ver.DiscordUserID,
+				"role_id", idRoleID,
+				"error", aErr,
+			)
+			h.respondEphemeral(s, i, "⚠️ Database updated, but failed to assign Discord ID Verified role. Check bot role hierarchy.")
 			return
 		}
 	}
@@ -581,15 +616,15 @@ func (h *IDVerifyHandler) executeApprove(
 		reviewNotes = req.ReviewReason
 	}
 
-	// 3. Log approval to staff log channel
+	// 4. Log approval to staff log channel
 	h.logIDVerifyEvent(s, guildID, "✅ 18+ ID Verification Approved", 0x2ECC71, ver.DiscordUserID, i.Member.User.ID, reviewNotes)
 
-	// 4. If associated with an id-verify channel, notify and purge channel in 5 seconds so ID photos are never retained
+	// 5. If associated with an id-verify channel, notify and purge channel in 5 seconds so ID photos are never retained
 	if req != nil && req.ChannelID != "" {
 		approveEmbed := &discordgo.MessageEmbed{
 			Title: "✅ 18+ ID Verification Approved",
 			Description: fmt.Sprintf(
-				"<@%s> has been verified as **18+** by <@%s> and granted the Verified role!\n\n"+
+				"<@%s> has been verified as **18+** by <@%s> and granted the **Verified** and **ID Verified** roles!\n\n"+
 					"🔒 *For your privacy, this channel and all uploaded ID images will be permanently deleted in 5 seconds.*",
 				ver.DiscordUserID,
 				i.Member.User.ID,
@@ -607,7 +642,7 @@ func (h *IDVerifyHandler) executeApprove(
 			})
 		} else {
 			_, _ = s.ChannelMessageSendEmbed(req.ChannelID, approveEmbed)
-			h.respondEphemeral(s, i, fmt.Sprintf("✅ Approved 18+ ID verification for <@%s> and scheduled <#%s> for deletion.", ver.DiscordUserID, req.ChannelID))
+			h.respondEphemeral(s, i, fmt.Sprintf("✅ Approved 18+ ID verification for <@%s> (granted Verified & ID Verified roles) and scheduled <#%s> for deletion.", ver.DiscordUserID, req.ChannelID))
 		}
 
 		chToDelete := req.ChannelID
@@ -619,7 +654,7 @@ func (h *IDVerifyHandler) executeApprove(
 		return
 	}
 
-	h.respondEphemeral(s, i, fmt.Sprintf("✅ Successfully approved 18+ ID verification for <@%s> and granted Verified role.", ver.DiscordUserID))
+	h.respondEphemeral(s, i, fmt.Sprintf("✅ Successfully approved 18+ ID verification for <@%s> and granted the Verified and ID Verified roles.", ver.DiscordUserID))
 }
 
 func (h *IDVerifyHandler) executeDeny(
@@ -973,4 +1008,28 @@ func extractOptionUserID(s *discordgo.Session, opt *discordgo.ApplicationCommand
 		return u.ID
 	}
 	return ""
+}
+
+// idVerifiedRoleID returns the dedicated IDVerifiedRoleID if configured,
+// falling back to VerifiedRoleID if IDVerifiedRoleID is omitted.
+func (h *IDVerifyHandler) idVerifiedRoleID() string {
+	if h.cfg != nil && h.cfg.IDVerifiedRoleID != "" {
+		return h.cfg.IDVerifiedRoleID
+	}
+	if h.cfg != nil {
+		return h.cfg.VerifiedRoleID
+	}
+	return ""
+}
+
+func hasRoleID(roles []string, target string) bool {
+	if target == "" {
+		return false
+	}
+	for _, r := range roles {
+		if r == target {
+			return true
+		}
+	}
+	return false
 }

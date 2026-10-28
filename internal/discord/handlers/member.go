@@ -122,12 +122,19 @@ func (h *MemberJoinHandler) HandleGuildMemberAdd(s *discordgo.Session, m *discor
 }
 
 // SyncUnassignedMembers scans the server members and ensures all human members
-// who hold neither the unverified nor verified role are granted the unverified role.
-func (h *MemberJoinHandler) SyncUnassignedMembers(s *discordgo.Session, verifiedRoleID string) error {
+// who hold neither the unverified nor any verified role (standard or ID verified) are granted the unverified role.
+func (h *MemberJoinHandler) SyncUnassignedMembers(s *discordgo.Session, verifiedRoleIDs ...string) error {
 	guildID := strings.TrimSpace(h.guildID)
 	unverifiedRole := strings.TrimSpace(h.unverifiedRoleID)
 	if guildID == "" || unverifiedRole == "" {
 		return nil
+	}
+
+	verifiedSet := make(map[string]struct{}, len(verifiedRoleIDs))
+	for _, id := range verifiedRoleIDs {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			verifiedSet[trimmed] = struct{}{}
+		}
 	}
 
 	h.logger.Info("starting unverified member role sweep", "guild_id", guildID, "unverified_role_id", unverifiedRole)
@@ -155,7 +162,7 @@ func (h *MemberJoinHandler) SyncUnassignedMembers(s *discordgo.Session, verified
 				if r == unverifiedRole {
 					hasUnverified = true
 				}
-				if verifiedRoleID != "" && r == verifiedRoleID {
+				if _, ok := verifiedSet[r]; ok {
 					hasVerified = true
 				}
 			}

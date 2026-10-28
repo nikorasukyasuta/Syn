@@ -2,6 +2,7 @@
   "guild_id": "1560121676212207627",
   "roles": {
     "verified_role_id": "987654321098765432",
+    "id_verified_role_id": "334455667788990011",
     "unverified_role_id": "112233445566778899",
     "staff_role_ids": [
       "111111111111111111",

@@ -214,7 +214,14 @@ func TestMonitor_StartAndStopFlushesRemaining(t *testing.T) {
 	}
 
 	mon.Start()
-	time.Sleep(70 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		pending, _, _, _ := mon.CacheStats()
+		if pending >= 2 {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
 
 	if err := mon.Stop(); err != nil {
 		t.Fatalf("unexpected error stopping monitor: %v", err)
