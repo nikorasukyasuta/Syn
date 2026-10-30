@@ -255,3 +255,58 @@ func TestRateLimitMiddleware(t *testing.T) {
 		t.Fatalf("expected exempt command 'red' to invoke handler, got %d calls", callCount)
 	}
 }
+
+func TestRequireAdmin(t *testing.T) {
+	t.Parallel()
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	session := newMockSession()
+
+	// 1. Authorized via Member.Permissions containing PermissionAdministrator
+	adminCalled := false
+	adminHandler := discord.RequireAdmin(silentLogger, func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		adminCalled = true
+	})
+
+	adminInteraction := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			ID:      "int_admin_1",
+			Token:   "tok_admin_1",
+			Type:    discordgo.InteractionApplicationCommand,
+			GuildID: "guild_123",
+			Member: &discordgo.Member{
+				User:        &discordgo.User{ID: "admin_user"},
+				Permissions: discordgo.PermissionAdministrator,
+				Roles:       []string{"role_admin"},
+			},
+		},
+	}
+	adminHandler(session, adminInteraction)
+	if !adminCalled {
+		t.Fatal("expected RequireAdmin to allow member with PermissionAdministrator")
+	}
+
+	// 2. Unauthorized: Staff member WITHOUT PermissionAdministrator
+	nonAdminCalled := false
+	nonAdminHandler := discord.RequireAdmin(silentLogger, func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		nonAdminCalled = true
+	})
+
+	nonAdminInteraction := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			ID:      "int_admin_2",
+			Token:   "tok_admin_2",
+			Type:    discordgo.InteractionApplicationCommand,
+			GuildID: "guild_123",
+			Member: &discordgo.Member{
+				User:        &discordgo.User{ID: "staff_not_admin"},
+				Permissions: discordgo.PermissionManageMessages | discordgo.PermissionKickMembers,
+				Roles:       []string{"role_staff"},
+			},
+		},
+	}
+	nonAdminHandler(session, nonAdminInteraction)
+	if nonAdminCalled {
+		t.Fatal("expected RequireAdmin to block non-admin staff member")
+	}
+}

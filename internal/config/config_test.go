@@ -348,3 +348,71 @@ func TestConfig_Load_WebCustomSettings(t *testing.T) {
 		t.Errorf("expected WebBaseURL 'https://syn.example.com', got %s", cfg.WebBaseURL)
 	}
 }
+
+func TestConfig_EnvironmentAndEC2Guard(t *testing.T) {
+	// 1. NormalizeEnvironment
+	if got := config.NormalizeEnvironment("dev"); got != config.EnvironmentDevelopment {
+		t.Fatalf("expected development, got %q", got)
+	}
+	if got := config.NormalizeEnvironment("production"); got != config.EnvironmentProduction {
+		t.Fatalf("expected production, got %q", got)
+	}
+	if got := config.NormalizeEnvironment(""); got != config.EnvironmentProduction {
+		t.Fatalf("expected default production, got %q", got)
+	}
+	if got := config.NormalizeEnvironment("invalid_mode"); got != "invalid_mode" {
+		t.Fatalf("expected unnormalized invalid_mode, got %q", got)
+	}
+
+	// 2. EC2Detector with simulated DMI vendor file
+	tmpDir := t.TempDir()
+	dmiVendorFile := tmpDir + "/sys_vendor"
+	if err := os.WriteFile(dmiVendorFile, []byte("Amazon EC2\n"), 0600); err != nil {
+		t.Fatalf("failed to write mock DMI vendor file: %v", err)
+	}
+	ec2Detector := &config.EC2Detector{
+		DMIVendorPaths: []string{dmiVendorFile},
+	}
+	if !ec2Detector.IsEC2() {
+		t.Fatal("expected EC2Detector to detect EC2 from DMI vendor 'Amazon EC2'")
+	}
+
+	localDetector := &config.EC2Detector{
+		DMIVendorPaths: []string{tmpDir + "/non_existent"},
+	}
+	if localDetector.IsEC2() {
+		t.Fatal("expected localDetector.IsEC2() to be false when no EC2 markers exist")
+	}
+
+	// 3. Development mode MUST be rejected when running on EC2
+	devCfg := config.Config{
+		Environment:      config.EnvironmentDevelopment,
+		DiscordToken:     "tok",
+		GuildID:          "dev_guild",
+		VerifiedRoleID:   "v",
+		IDVerifiedRoleID: "idv",
+		UnverifiedRoleID: "uv",
+		StaffRoleIDs:     []string{"s"},
+		DatabaseURL:      "postgres://localhost/db",
+	}
+	if !devCfg.IsDevelopment() || devCfg.IsProduction() {
+		t.Fatal("expected IsDevelopment() == true and IsProduction() == false")
+	}
+
+	if err := devCfg.ValidateWithDetector(ec2Detector); err == nil {
+		t.Fatal("expected hard security error when running development mode on an EC2 instance, got nil")
+	}
+	if err := devCfg.ValidateWithDetector(localDetector); err != nil {
+		t.Fatalf("expected development mode to succeed on local non-EC2 workstation, got: %v", err)
+	}
+
+	// 4. Production mode MUST be allowed on EC2
+	prodCfg := devCfg
+	prodCfg.Environment = config.EnvironmentProduction
+	if !prodCfg.IsProduction() || prodCfg.IsDevelopment() {
+		t.Fatal("expected IsProduction() == true and IsDevelopment() == false")
+	}
+	if err := prodCfg.ValidateWithDetector(ec2Detector); err != nil {
+		t.Fatalf("expected production mode to succeed on EC2 instance, got: %v", err)
+	}
+}

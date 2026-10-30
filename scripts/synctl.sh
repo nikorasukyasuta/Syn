@@ -20,6 +20,23 @@ case "$SUBCMD" in
 	deploy|build)
 		exec "${SCRIPT_DIR}/deploy/build_deploy.sh" "$@"
 		;;
+	dev|local-dev)
+		# Verify we are not running on an AWS EC2 instance before starting local dev mode
+		for dmi_path in /sys/devices/virtual/dmi/id/sys_vendor /sys/devices/virtual/dmi/id/board_vendor /sys/devices/virtual/dmi/id/bios_vendor /sys/devices/virtual/dmi/id/product_name /sys/devices/virtual/dmi/id/chassis_asset_tag; do
+			if [[ -r "$dmi_path" ]] && grep -qi "amazon ec2" "$dmi_path" 2>/dev/null; then
+				echo "❌ Security Violation: 'synctl.sh dev' cannot be executed on an AWS EC2 instance." >&2
+				exit 1
+			fi
+		done
+		if [[ -f /var/lib/cloud/data/instance-id ]] && grep -qE '^i-[0-9a-f]+' /var/lib/cloud/data/instance-id 2>/dev/null; then
+			echo "❌ Security Violation: 'synctl.sh dev' cannot be executed on an AWS EC2 instance." >&2
+			exit 1
+		fi
+		PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+		cd "$PROJECT_DIR"
+		echo "🧪 Starting Syn Bot in LOCAL DEVELOPMENT mode (APP_ENV=development)..."
+		exec env APP_ENV=development go run ./cmd/bot/main.go -dev "$@"
+		;;
 	logs|log)
 		exec "${SCRIPT_DIR}/logs/logs.sh" "$@"
 		;;
@@ -53,8 +70,9 @@ case "$SUBCMD" in
 ================================================================================
 Usage: $0 <command> [options]
 
-Deployment (scripts/deploy/):
-  deploy [--pull] [--backup] [--bot-only]   Build & deploy latest containers
+Deployment & Local Development:
+  deploy [--pull] [--backup] [--bot-only]   Build & deploy latest containers (Production EC2)
+  dev                                       Run bot locally in development mode (Blocked on EC2)
 
 Logs & Telemetry (scripts/logs/):
   logs [--bot|--db|--file|--metrics]        Stream or filter logs

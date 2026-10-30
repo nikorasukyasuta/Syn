@@ -33,6 +33,7 @@ type Bot struct {
 	flashHandler    *handlers.FlashHandler
 	legalHandler    *handlers.LegalHandler
 	idVerifyHandler *handlers.IDVerifyHandler
+	templateHandler *handlers.TemplateHandler
 	cmdQueue        *queue.CommandQueue
 	lockMgr         *syncutil.UserLockManager
 	rateLimiter     *ratelimit.UserRateLimiter
@@ -242,6 +243,22 @@ func (b *Bot) SetIDVerifyHandler(h *handlers.IDVerifyHandler) {
 	}
 }
 
+// SetTemplateHandler registers the Administrator-gated server template export and apply
+// slash commands (/template-export and /template-apply).
+func (b *Bot) SetTemplateHandler(h *handlers.TemplateHandler) {
+	b.templateHandler = h
+	if h != nil {
+		b.RegisterCommand(
+			handlers.TemplateExportCommandDefinition(),
+			b.wrapAdminHandler(h.HandleExportCommand),
+		)
+		b.RegisterCommand(
+			handlers.TemplateApplyCommandDefinition(),
+			b.wrapAdminHandler(h.HandleApplyCommand),
+		)
+	}
+}
+
 // Start opens the WebSocket connection to Discord, syncs guild slash commands,
 // and warm-loads the dynamic resource cache.
 func (b *Bot) Start() error {
@@ -355,6 +372,18 @@ func (b *Bot) wrapHandler(handler InteractionHandlerFunc, staffOnly bool, exempt
 		exempt = []string{"red"}
 	}
 	h = RateLimit(b.rateLimiter, b.cfg.StaffRoleIDs, exempt, b.logger, h)
+	return RecoverPanic(b.logger, h)
+}
+
+// wrapAdminHandler constructs an enterprise middleware pipeline for Administrator-only commands:
+// 1. RecoverPanic: Catches runtime panics gracefully
+// 2. RateLimit: Protects bot from user command flood
+// 3. WithTimeoutGuard: Ensures slow commands auto-defer before 1.5s
+// 4. RequireAdmin: Strictly enforces Discord Administrator permission or Guild Ownership
+func (b *Bot) wrapAdminHandler(handler InteractionHandlerFunc) InteractionHandlerFunc {
+	h := RequireAdmin(b.logger, handler)
+	h = WithTimeoutGuard(1200*time.Millisecond, h)
+	h = RateLimit(b.rateLimiter, b.cfg.StaffRoleIDs, nil, b.logger, h)
 	return RecoverPanic(b.logger, h)
 }
 

@@ -11,6 +11,7 @@ import (
 
 // Config holds enterprise application settings, database credentials, RBAC role mappings, and logging parameters.
 type Config struct {
+	Environment              string   // Runtime mode: "production" (default) or "development" (local only, forbidden on EC2)
 	DiscordToken             string
 	GuildID                  string
 	VerifiedRoleID           string   // Role ID granted upon standard member verification (/verify-member)
@@ -35,12 +36,24 @@ type Config struct {
 	MetricsLogPath           string // Optional: Rotating file path for time-series resource telemetry (default: "logs/metrics.jsonl")
 	MetricsSampleIntervalSec int    // Optional: Seconds between resource telemetry samples into cache (default: 15)
 	MetricsFlushIntervalSec  int    // Optional: Seconds between flushing cached resource telemetry to disk (default: 60)
+	ServerTemplatePath       string // Optional: File path where exported server template JSON is saved/loaded (default: "config/server_template.json")
 	IDsFilePath              string // Path to the file where Discord IDs were loaded from (if applicable)
+}
+
+// IsDevelopment returns true when the bot is configured to run in local development mode.
+func (c *Config) IsDevelopment() bool {
+	return NormalizeEnvironment(c.Environment) == EnvironmentDevelopment
+}
+
+// IsProduction returns true when the bot is configured to run in production mode.
+func (c *Config) IsProduction() bool {
+	return NormalizeEnvironment(c.Environment) == EnvironmentProduction
 }
 
 // DiscordIDs represents Discord snowflake identifiers and non-secret runtime settings
 // loaded from a dedicated JSON configuration file (e.g., config/discord_ids.json).
 type DiscordIDs struct {
+	Environment         string   `json:"environment,omitempty"`
 	GuildID             string   `json:"guild_id"`
 	VerifiedRoleID      string   `json:"verified_role_id"`
 	IDVerifiedRoleID    string   `json:"id_verified_role_id"`
@@ -65,6 +78,7 @@ type DiscordIDs struct {
 	} `json:"channels"`
 
 	Settings struct {
+		Environment              string `json:"environment,omitempty"`
 		SafewordEmoji            string `json:"safeword_emoji"`
 		LogLevel                 string `json:"log_level"`
 		LogFilePath              string `json:"log_file_path"`
@@ -72,6 +86,7 @@ type DiscordIDs struct {
 		MetricsSampleIntervalSec int    `json:"metrics_sample_interval_sec"`
 		MetricsFlushIntervalSec  int    `json:"metrics_flush_interval_sec"`
 		WebPort                  string `json:"web_port"`
+		ServerTemplatePath       string `json:"server_template_path,omitempty"`
 	} `json:"settings"`
 }
 
@@ -87,6 +102,9 @@ func LoadDiscordIDsFile(filePath string) (*DiscordIDs, error) {
 	}
 
 	// Consolidate nested values into top-level fields if top-level was blank
+	if ids.Environment == "" && ids.Settings.Environment != "" {
+		ids.Environment = ids.Settings.Environment
+	}
 	if ids.VerifiedRoleID == "" && ids.Roles.VerifiedRoleID != "" {
 		ids.VerifiedRoleID = ids.Roles.VerifiedRoleID
 	}
@@ -114,6 +132,12 @@ func LoadDiscordIDsFile(filePath string) (*DiscordIDs, error) {
 
 // Load parses configuration from external JSON files and environment variables.
 func Load() (*Config, error) {
+	// 0. Determine requested runtime environment ("production" vs "development")
+	rawEnv := os.Getenv("APP_ENV")
+	if rawEnv == "" {
+		rawEnv = os.Getenv("SYN_ENV")
+	}
+
 	// 1. Attempt to load Discord IDs from external configuration file
 	idsPath := os.Getenv("DISCORD_IDS_FILE")
 	if idsPath == "" {
@@ -127,6 +151,9 @@ func Load() (*Config, error) {
 	if idsPath != "" {
 		candidates = append(candidates, idsPath)
 	} else {
+		if NormalizeEnvironment(rawEnv) == EnvironmentDevelopment {
+			candidates = append(candidates, "config/discord_ids.dev.json", "discord_ids.dev.json")
+		}
 		candidates = append(candidates, "config/discord_ids.json", "config/ids.json", "discord_ids.json", "ids.json")
 	}
 
@@ -140,6 +167,11 @@ func Load() (*Config, error) {
 			}
 		}
 	}
+
+	if rawEnv == "" && fileIDs != nil && fileIDs.Environment != "" {
+		rawEnv = fileIDs.Environment
+	}
+	envMode := NormalizeEnvironment(rawEnv)
 
 	guildID := ""
 	verifiedRoleID := ""
@@ -293,7 +325,16 @@ func Load() (*Config, error) {
 	}
 	webBaseURL = strings.TrimRight(webBaseURL, "/")
 
+	serverTemplatePath := strings.TrimSpace(os.Getenv("SERVER_TEMPLATE_PATH"))
+	if serverTemplatePath == "" && fileIDs != nil && fileIDs.Settings.ServerTemplatePath != "" {
+		serverTemplatePath = strings.TrimSpace(fileIDs.Settings.ServerTemplatePath)
+	}
+	if serverTemplatePath == "" {
+		serverTemplatePath = "config/server_template.json"
+	}
+
 	cfg := &Config{
+		Environment:              envMode,
 		DiscordToken:             os.Getenv("DISCORD_TOKEN"),
 		GuildID:                  guildID,
 		VerifiedRoleID:           verifiedRoleID,
@@ -318,6 +359,7 @@ func Load() (*Config, error) {
 		MetricsLogPath:           metricsLogPath,
 		MetricsSampleIntervalSec: metricsSampleSec,
 		MetricsFlushIntervalSec:  metricsFlushSec,
+		ServerTemplatePath:       serverTemplatePath,
 		IDsFilePath:              resolvedIDsPath,
 	}
 
@@ -330,6 +372,26 @@ func Load() (*Config, error) {
 
 // Validate ensures the bot will not start in an insecure or unconfigured state.
 func (c *Config) Validate() error {
+	return c.ValidateWithDetector(DefaultEC2Detector())
+}
+
+// ValidateWithDetector validates configuration and enforces that development mode
+// can never run on an AWS EC2 instance.
+func (c *Config) ValidateWithDetector(detector *EC2Detector) error {
+	envMode := NormalizeEnvironment(c.Environment)
+	if envMode != EnvironmentProduction && envMode != EnvironmentDevelopment {
+		return fmt.Errorf("invalid environment %q: must be 'production' or 'development'", c.Environment)
+	}
+	c.Environment = envMode
+
+	if c.ServerTemplatePath == "" {
+		c.ServerTemplatePath = "config/server_template.json"
+	}
+
+	if envMode == EnvironmentDevelopment && detector != nil && detector.IsEC2() {
+		return errors.New("security violation: development mode (APP_ENV=development) can only run locally and is forbidden on AWS EC2 instances")
+	}
+
 	if c.DiscordToken == "" {
 		return errors.New("DISCORD_TOKEN is required in .env")
 	}
