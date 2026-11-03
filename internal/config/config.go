@@ -36,6 +36,7 @@ type Config struct {
 	LogFormat                string
 	TicketCategoryID         string // Optional: Category ID where ticket channels are created
 	TicketLogChannelID       string // Optional: Channel ID where ticket closures are logged
+	AnnouncementChannelID    string // Optional: Channel ID where bot update announcements are posted
 	FiltersDir               string // Optional: Directory holding word filter JSON files (default: "./config/filters")
 	WebPort                  string // Optional: Port for web terms/privacy/health server (default: "8080")
 	WebBaseURL               string // Optional: Base public URL for terms/privacy links (default: "http://localhost:8080")
@@ -154,10 +155,11 @@ type DiscordIDs struct {
 	ServerHelperRoleIDs []string `json:"server_helper_role_ids,omitempty"`
 	IDCheckerRoleIDs    []string `json:"id_checker_role_ids,omitempty"`
 	IDReviewerRoleIDs   []string `json:"id_reviewer_role_ids,omitempty"`
-	TicketCategoryID    string   `json:"ticket_category_id"`
-	TicketLogChannelID  string   `json:"ticket_log_channel_id"`
-	StaffAlertChannelID string   `json:"staff_alert_channel_id"`
-	WebBaseURL          string   `json:"web_base_url,omitempty"`
+	TicketCategoryID      string   `json:"ticket_category_id"`
+	TicketLogChannelID    string   `json:"ticket_log_channel_id"`
+	StaffAlertChannelID   string   `json:"staff_alert_channel_id"`
+	AnnouncementChannelID string   `json:"announcement_channel_id,omitempty"`
+	WebBaseURL            string   `json:"web_base_url,omitempty"`
 
 	// Supports nested structure: "roles": { ... }, "channels": { ... }, "settings": { ... }
 	Roles struct {
@@ -177,9 +179,10 @@ type DiscordIDs struct {
 	} `json:"roles"`
 
 	Channels struct {
-		TicketCategoryID    string `json:"ticket_category_id"`
-		TicketLogChannelID  string `json:"ticket_log_channel_id"`
-		StaffAlertChannelID string `json:"staff_alert_channel_id"`
+		TicketCategoryID      string `json:"ticket_category_id"`
+		TicketLogChannelID    string `json:"ticket_log_channel_id"`
+		StaffAlertChannelID   string `json:"staff_alert_channel_id"`
+		AnnouncementChannelID string `json:"announcement_channel_id,omitempty"`
 	} `json:"channels"`
 
 	Settings struct {
@@ -262,6 +265,9 @@ func LoadDiscordIDsFile(filePath string) (*DiscordIDs, error) {
 	}
 	if ids.StaffAlertChannelID == "" && ids.Channels.StaffAlertChannelID != "" {
 		ids.StaffAlertChannelID = ids.Channels.StaffAlertChannelID
+	}
+	if ids.AnnouncementChannelID == "" && ids.Channels.AnnouncementChannelID != "" {
+		ids.AnnouncementChannelID = ids.Channels.AnnouncementChannelID
 	}
 	if ids.WebBaseURL == "" && ids.Settings.WebBaseURL != "" {
 		ids.WebBaseURL = ids.Settings.WebBaseURL
@@ -348,6 +354,7 @@ func Load() (*Config, error) {
 	ticketCat := ""
 	ticketLog := ""
 	staffAlertChan := ""
+	announcementChan := ""
 
 	if fileIDs != nil {
 		guildID = fileIDs.GuildID
@@ -364,6 +371,7 @@ func Load() (*Config, error) {
 		ticketCat = fileIDs.TicketCategoryID
 		ticketLog = fileIDs.TicketLogChannelID
 		staffAlertChan = fileIDs.StaffAlertChannelID
+		announcementChan = fileIDs.AnnouncementChannelID
 	}
 
 	// 2. Fallback to environment variables if not populated by external IDs file
@@ -447,6 +455,12 @@ func Load() (*Config, error) {
 	}
 	if staffAlertChan == "" {
 		staffAlertChan = strings.TrimSpace(os.Getenv("STAFF_ALERT_CHANNEL_ID"))
+	}
+	if announcementChan == "" {
+		announcementChan = strings.TrimSpace(os.Getenv("DISCORD_ANNOUNCEMENT_CHANNEL_ID"))
+		if announcementChan == "" {
+			announcementChan = strings.TrimSpace(os.Getenv("ANNOUNCEMENT_CHANNEL_ID"))
+		}
 	}
 
 	safewordEmoji := strings.TrimSpace(os.Getenv("SAFEWORD_EMOJI"))
@@ -575,6 +589,7 @@ func Load() (*Config, error) {
 		LogFormat:                logFormat,
 		TicketCategoryID:         ticketCat,
 		TicketLogChannelID:       ticketLog,
+		AnnouncementChannelID:    announcementChan,
 		FiltersDir:               filtersDir,
 		WebPort:                  webPort,
 		WebBaseURL:               webBaseURL,

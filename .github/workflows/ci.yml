@@ -52,9 +52,7 @@ jobs:
         run: bash -n scripts/*.sh scripts/*/*.sh
 
       - name: Run All Unit & Race Tests Across Every Package
-        run: |
-          go test -v -race -count=1 -coverprofile=coverage.out ./...
-          go tool cover -func=coverage.out | tail -n 1
+        run: go test -v -race -count=1 ./...
 
       - name: Verify Production Binary Compilation
         run: |

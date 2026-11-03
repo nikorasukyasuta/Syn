@@ -27,9 +27,10 @@ var History = []Release{
 		Changes: []string{
 			"Updated dependencies and resolved minor issues",
 			"Improved documentation and code readability",
-			"Flash and Dash feature further enhanced with improved auto-deletion and channel management",
-			"Personal Photo Deletion for Spoilered Images of your own posts in any channels",
+			"Flash and Dash feature further enhanced with improved 30-minute auto-deletion and channel management",
+			"Personal Photo Deletion (/privacy-mode) for Spoilered Images of your own posts in any channels (30m–14d; 1m override for debugging for Admins)",
 			"Ask To DM role granted on users joining the server automatically to limit direct messages from other users, auto removes on claiming DM status role",
+			"Already-verified members can open a new 18+ ID verification ticket, with ID Reviewers, Server Helpers, and Server Staff granted access",
 		},
 	},
 	{

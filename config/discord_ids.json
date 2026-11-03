@@ -4,10 +4,10 @@
     "verified_role_id": "1562244769931989022",
     "id_verified_role_id": "1562244769931989023",
     "unverified_role_id": "1562244680559886476",
-    "join_ask_to_dm_role_id": "",
-    "ask_to_dm_role_id": "",
-    "dms_open_role_id": "",
-    "dms_closed_role_id": "",
+    "join_ask_to_dm_role_id": "1567140451176288266",
+    "ask_to_dm_role_id": "1560518344942035084",
+    "dms_open_role_id": "1560518408460697703",
+    "dms_closed_role_id": "1560518482645360681",
     "staff_role_ids": ["1560132655180161076","1560515707958202389"],
     "server_helper_role_ids": ["1562245199760203998"],
     "id_checker_role_ids": []
@@ -15,7 +15,18 @@
   "channels": {
     "ticket_category_id": "1562256127197057094",
     "ticket_log_channel_id": "1562599674060472390",
-    "staff_alert_channel_id": "1562682670549438486"
+    "staff_alert_channel_id": "1562682670549438486",
+    "announcement_channel_id": "1560208751699435620"
+  },
+  "settings": {
+    "safeword_emoji": "🛑",
+    "log_level": "INFO",
+    "log_file_path": "logs/syn.log",
+    "metrics_log_path": "logs/metrics.jsonl",
+    "metrics_sample_interval_sec": 15,
+    "metrics_flush_interval_sec": 60,
+    "web_port": "8080",
+    "web_base_url": "https://kinkutopia.com"
   }
 }
 

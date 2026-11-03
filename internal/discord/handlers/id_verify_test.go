@@ -413,7 +413,7 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 		t.Fatal("expected applicant_1 verification to be revoked")
 	}
 
-	// 8. Member who already holds the dedicated IDVerifiedRoleID is blocked from opening a duplicate session
+	// 8. Member who is already verified (holding Verified and/or IDVerified roles) IS allowed to open a verification ticket
 	alreadyIDVerifiedClick := &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
 			ID:      "int_already_idv",
@@ -429,8 +429,8 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 		},
 	}
 	h.HandleComponentInteraction(session, alreadyIDVerifiedClick)
-	if dupReq, _ := idRepo.GetPendingRequestByUser(context.Background(), "guild_1", "applicant_idv"); dupReq != nil {
-		t.Fatalf("expected member already holding role_id_verified to not create a new request, got %+v", dupReq)
+	if newReq, _ := idRepo.GetPendingRequestByUser(context.Background(), "guild_1", "applicant_idv"); newReq == nil {
+		t.Fatal("expected already-verified member to be allowed to open a verification ticket, got nil")
 	}
 }
 

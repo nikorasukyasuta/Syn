@@ -6,7 +6,11 @@ import (
 )
 
 const (
-	// MinSpoilerPhotoTTL is the minimum 30-minute timer users can set for their spoilered photos.
+	// MinAdminSpoilerPhotoTTL is the minimum 1-minute timer Server Administrators can set for their spoilered photos.
+	MinAdminSpoilerPhotoTTL    = 1 * time.Minute
+	MinAdminSpoilerPhotoTTLSec = 60
+
+	// MinSpoilerPhotoTTL is the minimum 30-minute timer standard users can set for their spoilered photos.
 	MinSpoilerPhotoTTL    = 30 * time.Minute
 	MinSpoilerPhotoTTLSec = 1800
 

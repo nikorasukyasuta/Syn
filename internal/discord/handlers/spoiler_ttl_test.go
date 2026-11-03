@@ -107,12 +107,29 @@ func (m *mockSpoilerTTLRepo) hasMessage(id string) bool {
 func TestSpoilerTTL_ValidationAndBounds(t *testing.T) {
 	t.Parallel()
 
-	// Minimum is 30 minutes
+	// Command definition is renamed to privacy-mode
+	cmdDef := handlers.SpoilerTTLCommandDefinition()
+	if cmdDef.Name != "privacy-mode" {
+		t.Fatalf("expected command name 'privacy-mode', got %q", cmdDef.Name)
+	}
+
+	// Minimum for standard users is 30 minutes
 	if err := service.ValidateSpoilerTTL(29 * time.Minute); err == nil {
-		t.Fatal("expected 29m to be rejected (minimum is 30m)")
+		t.Fatal("expected 29m to be rejected for standard users (minimum is 30m)")
 	}
 	if err := service.ValidateSpoilerTTL(30 * time.Minute); err != nil {
 		t.Fatalf("expected 30m to be valid, got: %v", err)
+	}
+
+	// Server Administrators can set 1 minute (down to 1m, rejecting < 1m)
+	if err := service.ValidateSpoilerTTLForUser(0, true); err == nil {
+		t.Fatal("expected 0m to be rejected even for admins")
+	}
+	if err := service.ValidateSpoilerTTLForUser(1*time.Minute, true); err != nil {
+		t.Fatalf("expected 1m to be valid for admins, got: %v", err)
+	}
+	if err := service.ValidateSpoilerTTLForUser(1*time.Minute, false); err == nil {
+		t.Fatal("expected 1m to be rejected for non-admin users")
 	}
 
 	// Arbitrary duration between 30m and 14d
@@ -142,7 +159,7 @@ func TestSpoilerTTLHandler_EphemeralPromptDropdownsAndConfirmButton(t *testing.T
 
 	session := newMockSession(http.StatusOK, `{}`)
 
-	// 1. User runs /spoiler-ttl -> opens ephemeral prompt
+	// 1. User runs /privacy-mode -> opens ephemeral prompt
 	openCmd := &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
 			ID:      "int_open",
@@ -152,7 +169,7 @@ func TestSpoilerTTLHandler_EphemeralPromptDropdownsAndConfirmButton(t *testing.T
 				User: &discordgo.User{ID: "user_99"},
 			},
 			Data: discordgo.ApplicationCommandInteractionData{
-				Name: "spoiler-ttl",
+				Name: "privacy-mode",
 			},
 		},
 	}
@@ -252,6 +269,72 @@ func TestSpoilerTTLHandler_EphemeralPromptDropdownsAndConfirmButton(t *testing.T
 	handler.HandleMessageCreate(session, unspoileredMsg)
 	if repo.hasMessage("msg_normal_photo_2") {
 		t.Fatal("did not expect unspoilered photo to be scheduled by SpoilerTTLHandler")
+	}
+
+	// 6. Admin sets 1 minute via /privacy-mode and confirms -> saved and schedules 1m deletion
+	adminCmd := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			ID:      "int_admin_open",
+			GuildID: "guild_123",
+			Type:    discordgo.InteractionApplicationCommand,
+			Member: &discordgo.Member{
+				User:        &discordgo.User{ID: "admin_1"},
+				Permissions: discordgo.PermissionAdministrator,
+			},
+			Data: discordgo.ApplicationCommandInteractionData{
+				Name: "privacy-mode",
+				Options: []*discordgo.ApplicationCommandInteractionDataOption{
+					{Name: "days", Type: discordgo.ApplicationCommandOptionInteger, Value: float64(0)},
+					{Name: "hours", Type: discordgo.ApplicationCommandOptionInteger, Value: float64(0)},
+					{Name: "minutes", Type: discordgo.ApplicationCommandOptionInteger, Value: float64(1)},
+				},
+			},
+		},
+	}
+	handler.HandleSpoilerTTLCommand(session, adminCmd)
+
+	adminConfirm := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			ID:      "int_admin_confirm",
+			GuildID: "guild_123",
+			Type:    discordgo.InteractionMessageComponent,
+			Member: &discordgo.Member{
+				User:        &discordgo.User{ID: "admin_1"},
+				Permissions: discordgo.PermissionAdministrator,
+			},
+			Data: discordgo.MessageComponentInteractionData{
+				CustomID:      handlers.BtnSpoilerTTLConfirmCustomID,
+				ComponentType: discordgo.ButtonComponent,
+			},
+		},
+	}
+	if !handler.HandleComponentInteraction(session, adminConfirm) {
+		t.Fatal("expected admin confirm button interaction to be handled")
+	}
+
+	adminTTL, ok := svc.GetUserTTL("guild_123", "admin_1")
+	if !ok || adminTTL != 1*time.Minute {
+		t.Fatalf("expected admin saved TTL of 1m, got %v (ok=%v)", adminTTL, ok)
+	}
+
+	adminSpoilerMsg := &discordgo.MessageCreate{
+		Message: &discordgo.Message{
+			ID:        "msg_admin_spoiler_1m",
+			ChannelID: "ch_general_nsfw",
+			GuildID:   "guild_123",
+			Author:    &discordgo.User{ID: "admin_1"},
+			Attachments: []*discordgo.MessageAttachment{
+				{
+					ID:          "att_admin",
+					Filename:    "SPOILER_test.png",
+					ContentType: "image/png",
+				},
+			},
+		},
+	}
+	handler.HandleMessageCreate(session, adminSpoilerMsg)
+	if !repo.hasMessage("msg_admin_spoiler_1m") {
+		t.Fatal("expected admin 1-minute spoilered photo message to be scheduled for auto-deletion")
 	}
 }
 

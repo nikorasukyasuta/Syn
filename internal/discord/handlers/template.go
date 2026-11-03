@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -147,16 +148,44 @@ func (h *TemplateHandler) HandleExportCommand(s *discordgo.Session, i *discordgo
 	}
 
 	tmpl := h.svc.BuildTemplate(guild, roles, channels, h.cfg)
+	savedPath := targetPath
 	jsonBytes, err := h.svc.SaveTemplate(targetPath, tmpl)
 	if err != nil {
-		h.logger.Error("failed to save server template to disk", "path", targetPath, "error", err)
-		h.sendFollowup(s, i, fmt.Sprintf("❌ Failed to write server template to `%s`: %v", targetPath, err), nil, nil)
-		return
+		// If the primary target directory (e.g. /app/config) is mounted read-only inside Docker,
+		// automatically fall back to writable directories (logs/ or /tmp/) and still attach the file in Discord.
+		baseName := filepath.Base(targetPath)
+		if baseName == "" || baseName == "." || baseName == "/" {
+			baseName = "server_template.json"
+		}
+		var fallbackSaved bool
+		for _, fallbackPath := range []string{
+			filepath.Join("logs", baseName),
+			filepath.Join(os.TempDir(), baseName),
+		} {
+			if fbBytes, fbErr := h.svc.SaveTemplate(fallbackPath, tmpl); fbErr == nil {
+				jsonBytes = fbBytes
+				savedPath = fallbackPath
+				fallbackSaved = true
+				h.logger.Warn("primary template directory was read-only; saved server template to writable fallback path",
+					"requested_path", targetPath,
+					"fallback_path", fallbackPath,
+				)
+				break
+			}
+		}
+		if !fallbackSaved && len(jsonBytes) == 0 {
+			h.logger.Error("failed to marshal server template", "path", targetPath, "error", err)
+			h.sendFollowup(s, i, fmt.Sprintf("❌ Failed to export server template: %v", err), nil, nil)
+			return
+		}
+		if !fallbackSaved {
+			savedPath = fmt.Sprintf("%s (attached below — container filesystem is read-only)", baseName)
+		}
 	}
 
 	h.logger.Info("exported server template successfully",
 		"guild_id", guildID,
-		"path", targetPath,
+		"path", savedPath,
 		"roles_count", len(tmpl.Roles),
 		"categories_count", len(tmpl.Categories),
 		"channels_count", len(tmpl.Channels),
@@ -167,12 +196,13 @@ func (h *TemplateHandler) HandleExportCommand(s *discordgo.Session, i *discordgo
 		Description: fmt.Sprintf(
 			"Captured a complete snapshot of **%s** (`%s`) with all roles, categories, channels, and permission overwrites.\n\n"+
 				"**Next Steps for Local Development:**\n"+
-				"1. Download the attached `server_template.json` (or copy `%s`) into `config/server_template.json` on your local development machine.\n"+
+				"1. Download the attached `%s` (or copy `%s`) into `config/server_template.json` on your local development machine.\n"+
 				"2. Start the bot locally in development mode (`APP_ENV=development` or `./scripts/synctl.sh dev`).\n"+
 				"3. Run `/template-apply confirm:True` on your development Discord server to recreate the exact server state.",
 			tmpl.SourceGuildName,
 			tmpl.SourceGuildID,
-			targetPath,
+			filepath.Base(targetPath),
+			savedPath,
 		),
 		Color: 0x2ECC71,
 		Fields: []*discordgo.MessageEmbedField{
@@ -193,7 +223,7 @@ func (h *TemplateHandler) HandleExportCommand(s *discordgo.Session, i *discordgo
 			},
 			{
 				Name:   "Saved File Path",
-				Value:  fmt.Sprintf("`%s`", targetPath),
+				Value:  fmt.Sprintf("`%s`", savedPath),
 				Inline: false,
 			},
 		},

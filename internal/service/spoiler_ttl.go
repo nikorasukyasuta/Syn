@@ -42,10 +42,23 @@ func userTTLKey(guildID, userID string) string {
 	return guildID + ":" + userID
 }
 
-// ValidateSpoilerTTL checks that a user-selected duration is between 30 minutes and 14 days inclusive.
+// ValidateSpoilerTTL checks that a standard user-selected duration is between 30 minutes and 14 days inclusive.
 func ValidateSpoilerTTL(d time.Duration) error {
-	if d < domain.MinSpoilerPhotoTTL {
-		return fmt.Errorf("duration must be at least 30 minutes (got %s)", FormatSpoilerTTL(d))
+	return ValidateSpoilerTTLForUser(d, false)
+}
+
+// ValidateSpoilerTTLForUser checks that a selected duration is within valid bounds:
+//   - Standard users: 30 minutes to 14 days inclusive
+//   - Server Administrators: 1 minute to 14 days inclusive
+func ValidateSpoilerTTLForUser(d time.Duration, isAdmin bool) error {
+	if isAdmin {
+		if d < domain.MinAdminSpoilerPhotoTTL {
+			return fmt.Errorf("duration must be at least 1 minute (got %s)", FormatSpoilerTTL(d))
+		}
+	} else {
+		if d < domain.MinSpoilerPhotoTTL {
+			return fmt.Errorf("duration must be at least 30 minutes (got %s)", FormatSpoilerTTL(d))
+		}
 	}
 	if d > domain.MaxSpoilerPhotoTTL {
 		return fmt.Errorf("duration cannot exceed 14 days (got %s)", FormatSpoilerTTL(d))
@@ -153,9 +166,15 @@ func (s *SpoilerTTLService) Init(ctx context.Context, session *discordgo.Session
 	return nil
 }
 
-// SetUserTTL saves and caches a user's personal spoilered photo TTL preference.
+// SetUserTTL saves and caches a standard user's personal spoilered photo TTL preference.
 func (s *SpoilerTTLService) SetUserTTL(ctx context.Context, guildID, userID string, d time.Duration) error {
-	if err := ValidateSpoilerTTL(d); err != nil {
+	return s.SetUserTTLWithAdmin(ctx, guildID, userID, d, false)
+}
+
+// SetUserTTLWithAdmin saves and caches a user's personal spoilered photo TTL preference,
+// allowing Server Administrators to configure durations as low as 1 minute.
+func (s *SpoilerTTLService) SetUserTTLWithAdmin(ctx context.Context, guildID, userID string, d time.Duration, isAdmin bool) error {
+	if err := ValidateSpoilerTTLForUser(d, isAdmin); err != nil {
 		return err
 	}
 

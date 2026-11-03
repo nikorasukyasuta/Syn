@@ -155,10 +155,15 @@ func NewBot(
 	}
 
 	// 7. Register /version (Public bot version, update changelog, and GitHub source link)
+	// and /announce-update (Staff command to post embedded update announcement)
 	if versionHandler != nil {
 		b.RegisterCommand(
 			handlers.VersionCommandDefinition(),
 			b.wrapHandler(versionHandler.HandleVersionCommand, false, false),
+		)
+		b.RegisterCommand(
+			handlers.AnnounceUpdateCommandDefinition(),
+			b.wrapHandler(versionHandler.HandleAnnounceUpdateCommand, true, false),
 		)
 	}
 
@@ -244,15 +249,17 @@ func (b *Bot) SetIDVerifyHandler(h *handlers.IDVerifyHandler) {
 	}
 }
 
-// SetSpoilerTTLHandler registers the public /spoiler-ttl command, component interaction handler,
+// SetSpoilerTTLHandler registers the public /privacy-mode command, component interaction handler,
 // and automatic spoilered photo TTL message listener.
 func (b *Bot) SetSpoilerTTLHandler(h *handlers.SpoilerTTLHandler) {
 	b.spoilerTTLHandler = h
 	if h != nil {
+		wrapped := b.wrapHandler(h.HandleSpoilerTTLCommand, false, false)
 		b.RegisterCommand(
 			handlers.SpoilerTTLCommandDefinition(),
-			b.wrapHandler(h.HandleSpoilerTTLCommand, false, false),
+			wrapped,
 		)
+		b.routes["spoiler-ttl"] = wrapped
 		b.session.AddHandler(h.HandleMessageCreate)
 	}
 }

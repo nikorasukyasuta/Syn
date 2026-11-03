@@ -2,10 +2,11 @@ services:
   # One-shot init service ensures host logs directory has open write permissions before bot starts
   init-logs:
     image: alpine:latest
-    command: ["sh", "-c", "mkdir -p /app/logs /app/assets/panels && chmod -R 777 /app/logs"]
+    command: ["sh", "-c", "mkdir -p /app/logs /app/assets/panels /app/config && chmod -R 777 /app/logs /app/config"]
     volumes:
       - ${LOGS_HOST_DIR:-./logs}:/app/logs:rw
       - ${ASSETS_HOST_DIR:-./assets/panels}:/app/assets/panels:rw
+      - ./config:/app/config:rw
     restart: "no"
 
   bot:
@@ -37,8 +38,8 @@ services:
       - path: .env
         required: false            # Allows starting with environment variables or external SSM/secrets without failing if .env is missing
     volumes:
-      # Mount external Discord IDs configuration file (Guild ID, Role IDs, Channel IDs)
-      - ./config:/app/config:ro
+      # Mount external Discord IDs configuration and exported server templates directory as Read-Write
+      - ./config:/app/config:rw
       # Mount local EC2 image files into the container as strictly Read-Only (defaults to ./assets/panels)
       - ${ASSETS_HOST_DIR:-./assets/panels}:/app/assets/panels:ro
       # Mount writable logs directory for rotating log files on disk
