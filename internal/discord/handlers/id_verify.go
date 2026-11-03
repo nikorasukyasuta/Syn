@@ -484,13 +484,7 @@ func (h *IDVerifyHandler) processStartVerification(s *discordgo.Session, i *disc
 		guildID = h.cfg.GuildID
 	}
 
-	// 2. Check if user already holds the dedicated ID Verified role or has an open ID verification request
-	idRoleID := h.idVerifiedRoleID()
-	if idRoleID != "" && hasRoleID(i.Member.Roles, idRoleID) {
-		h.sendDeferredFollowup(s, i, "✅ You are already **18+ ID Verified** in this server!")
-		return
-	}
-
+	// 2. Check if user already has an open pending ID verification request (users who are already verified are still allowed to open a ticket)
 	existingReq, err := h.svc.CheckCanOpenRequest(ctx, guildID, caller.ID)
 	if errors.Is(err, domain.ErrIDVerifyRequestAlreadyOpen) && existingReq != nil {
 		h.sendDeferredFollowup(s, i, fmt.Sprintf(
@@ -499,14 +493,7 @@ func (h *IDVerifyHandler) processStartVerification(s *discordgo.Session, i *disc
 		))
 		return
 	}
-	if errors.Is(err, domain.ErrAlreadyVerified) {
-		// If a separate IDVerifiedRoleID is configured and the member only completed basic verification (/verify-member),
-		// allow them to proceed to obtain their dedicated 18+ ID Verified role.
-		if h.cfg.IDVerifiedRoleID == "" || h.cfg.IDVerifiedRoleID == h.cfg.VerifiedRoleID || hasRoleID(i.Member.Roles, h.cfg.IDVerifiedRoleID) {
-			h.sendDeferredFollowup(s, i, "✅ You are already **18+ ID Verified** in this server!")
-			return
-		}
-	} else if err != nil {
+	if err != nil {
 		h.logger.Error("error validating ID verification eligibility", "error", err, "user_id", caller.ID)
 		h.sendDeferredFollowup(s, i, "❌ An error occurred while validating your verification status. Please try again.")
 		return

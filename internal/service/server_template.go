@@ -244,19 +244,33 @@ func (s *ServerTemplateService) SaveTemplate(filePath string, tmpl *domain.Serve
 	if filePath != "" {
 		if dir := filepath.Dir(filePath); dir != "" && dir != "." {
 			if err := os.MkdirAll(dir, 0755); err != nil {
-				return nil, fmt.Errorf("creating template directory %s: %w", dir, err)
+				return data, fmt.Errorf("creating template directory %s: %w", dir, err)
 			}
 		}
 		if err := os.WriteFile(filePath, data, 0644); err != nil {
-			return nil, fmt.Errorf("writing server template file %s: %w", filePath, err)
+			return data, fmt.Errorf("writing server template file %s: %w", filePath, err)
 		}
 	}
 	return data, nil
 }
 
-// LoadTemplate reads and unmarshals a ServerTemplate JSON file from disk.
+// LoadTemplate reads and unmarshals a ServerTemplate JSON file from disk, checking fallback
+// writable directories (logs/ and /tmp/) if the primary path does not exist.
 func (s *ServerTemplateService) LoadTemplate(filePath string) (*domain.ServerTemplate, error) {
 	data, err := os.ReadFile(filePath)
+	if err != nil && os.IsNotExist(err) && filePath != "" {
+		baseName := filepath.Base(filePath)
+		for _, fallback := range []string{
+			filepath.Join("logs", baseName),
+			filepath.Join(os.TempDir(), baseName),
+		} {
+			if fbData, fbErr := os.ReadFile(fallback); fbErr == nil {
+				data = fbData
+				err = nil
+				break
+			}
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("reading server template file %s: %w", filePath, err)
 	}

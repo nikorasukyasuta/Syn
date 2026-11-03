@@ -168,7 +168,7 @@ func main() {
 	}
 
 	// Bot Versioning and GitHub Source Tracking Handler
-	versionHandler := handlers.NewVersionHandler()
+	versionHandler := handlers.NewVersionHandler(handlers.WithVersionConfig(cfg, logger))
 
 	// Automated Word Filter and Moderation Warnings
 	warningRepo := postgres.NewWarningRepo(dbPool)
@@ -267,6 +267,18 @@ func main() {
 	} else {
 		logger.Info("development mode: skipping startup ticket hub auto-provisioning until /template-apply populates ticket_category_id")
 	}
+
+	// Automatically post an embedded update announcement in the server's announcement channel
+	// whenever a new version has not yet been announced.
+	go func() {
+		if chID, posted, err := versionHandler.EnsureUpdateAnnouncement(bot.Session(), cfg.GuildID); err != nil {
+			logger.Warn("failed to check or post bot update announcement on startup", "error", err)
+		} else if posted {
+			logger.Info("posted bot update announcement to announcement channel", "channel_id", chID)
+		} else {
+			logger.Info("bot update announcement for current version already present", "channel_id", chID)
+		}
+	}()
 
 	// 6. Block until OS termination signal (Docker stop / EC2 reboot)
 	stopChan := make(chan os.Signal, 1)

@@ -64,15 +64,18 @@ func NewSpoilerTTLHandler(
 	}
 }
 
-// SpoilerTTLCommandDefinition returns the Discord slash command schema for /spoiler-ttl.
-// Available to all server members.
+// PrivacyModeCommandName is the Discord slash command name for configuring personal spoilered photo TTLs.
+const PrivacyModeCommandName = "privacy-mode"
+
+// SpoilerTTLCommandDefinition returns the Discord slash command schema for /privacy-mode.
+// Available to all server members (30m–14d for members, 1m–14d for Server Administrators for debugging).
 func SpoilerTTLCommandDefinition() *discordgo.ApplicationCommand {
 	dmPermission := false
 	minValZero := 0.0
 
 	return &discordgo.ApplicationCommand{
-		Name:         "spoiler-ttl",
-		Description:  "Set a personal auto-delete timer (30m to 14d) for all spoilered NSFW photos you post",
+		Name:         PrivacyModeCommandName,
+		Description:  "Set a personal auto-delete timer for all spoilered NSFW photos you post",
 		DMPermission: &dmPermission,
 		Options: []*discordgo.ApplicationCommandOption{
 			{
@@ -144,9 +147,10 @@ func (h *SpoilerTTLHandler) HandleSpoilerTTLCommand(s *discordgo.Session, i *dis
 		draft = customDraft
 	}
 
+	isAdmin := h.isCallerAdmin(s, i)
 	h.setDraft(guildID, userID, draft)
 
-	embed, components := h.buildPromptView(guildID, userID, draft, "")
+	embed, components := h.buildPromptView(guildID, userID, draft, isAdmin, "")
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
@@ -210,12 +214,13 @@ func (h *SpoilerTTLHandler) handleDropdownChange(s *discordgo.Session, i *discor
 	}
 	h.setDraft(guildID, userID, draft)
 
+	isAdmin := h.isCallerAdmin(s, i)
 	var notice string
-	if err := service.ValidateSpoilerTTL(draft.Duration()); err != nil {
+	if err := service.ValidateSpoilerTTLForUser(draft.Duration(), isAdmin); err != nil {
 		notice = "⚠️ " + err.Error() + ". Please adjust the dropdowns before confirming."
 	}
 
-	embed, components := h.buildPromptView(guildID, userID, draft, notice)
+	embed, components := h.buildPromptView(guildID, userID, draft, isAdmin, notice)
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
 		Data: &discordgo.InteractionResponseData{
@@ -233,12 +238,17 @@ func (h *SpoilerTTLHandler) handleConfirmButton(s *discordgo.Session, i *discord
 		guildID = h.cfg.GuildID
 	}
 
+	isAdmin := h.isCallerAdmin(s, i)
 	draft := h.getDraft(guildID, userID)
 	selectedDuration := draft.Duration()
 
-	if err := service.ValidateSpoilerTTL(selectedDuration); err != nil {
-		notice := "❌ Cannot confirm: " + err.Error() + ". Minimum is **30 minutes** and maximum is **14 days**."
-		embed, components := h.buildPromptView(guildID, userID, draft, notice)
+	if err := service.ValidateSpoilerTTLForUser(selectedDuration, isAdmin); err != nil {
+		minLabel := "30 minutes"
+		if isAdmin {
+			minLabel = "1 minute"
+		}
+		notice := fmt.Sprintf("❌ Cannot confirm: %s. Minimum is **%s** and maximum is **14 days**.", err.Error(), minLabel)
+		embed, components := h.buildPromptView(guildID, userID, draft, isAdmin, notice)
 		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseUpdateMessage,
 			Data: &discordgo.InteractionResponseData{
@@ -253,13 +263,13 @@ func (h *SpoilerTTLHandler) handleConfirmButton(s *discordgo.Session, i *discord
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := h.svc.SetUserTTL(ctx, guildID, userID, selectedDuration); err != nil {
+	if err := h.svc.SetUserTTLWithAdmin(ctx, guildID, userID, selectedDuration, isAdmin); err != nil {
 		h.respondEphemeralError(s, i, fmt.Sprintf("Failed to save your spoilered photo time limit: %v", err))
 		return
 	}
 
 	confirmMsg := fmt.Sprintf("✅ **Confirmed!** All spoilered photos you post will automatically be deleted after **%s**.", service.FormatSpoilerTTL(selectedDuration))
-	embed, components := h.buildPromptView(guildID, userID, draft, confirmMsg)
+	embed, components := h.buildPromptView(guildID, userID, draft, isAdmin, confirmMsg)
 	embed.Color = 0x22C55E // Green confirmation color
 
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -287,8 +297,9 @@ func (h *SpoilerTTLHandler) handleDisableButton(s *discordgo.Session, i *discord
 		return
 	}
 
+	isAdmin := h.isCallerAdmin(s, i)
 	draft := h.getDraft(guildID, userID)
-	embed, components := h.buildPromptView(guildID, userID, draft, "🛑 Auto-deletion for your spoilered photos has been **disabled**.")
+	embed, components := h.buildPromptView(guildID, userID, draft, isAdmin, "🛑 Auto-deletion for your spoilered photos has been **disabled**.")
 	embed.Color = 0xF59E0B
 
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -304,6 +315,7 @@ func (h *SpoilerTTLHandler) handleDisableButton(s *discordgo.Session, i *discord
 func (h *SpoilerTTLHandler) buildPromptView(
 	guildID, userID string,
 	draft spoilerTTLDraft,
+	isAdmin bool,
 	statusNotice string,
 ) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
 	activeStatus := "Not Configured (Spoilered photos stay until manually deleted)"
@@ -313,13 +325,19 @@ func (h *SpoilerTTLHandler) buildPromptView(
 
 	selectedDur := draft.Duration()
 	selectedSummary := service.FormatSpoilerTTL(selectedDur)
-	validationErr := service.ValidateSpoilerTTL(selectedDur)
+	validationErr := service.ValidateSpoilerTTLForUser(selectedDur, isAdmin)
+	minShortLabel := "30m"
+	minDisplayLabel := "`30 minutes`"
+	if isAdmin {
+		minShortLabel = "1m"
+		minDisplayLabel = "`1 minute` *(Admin override; 30 minutes for members)*"
+	}
 	if validationErr != nil {
-		selectedSummary = fmt.Sprintf("%s *(Out of range: must be 30m – 14d)*", selectedSummary)
+		selectedSummary = fmt.Sprintf("%s *(Out of range: must be %s – 14d)*", selectedSummary, minShortLabel)
 	}
 
 	desc := "Choose how long your **spoilered NSFW photos** remain on the server before being automatically deleted.\n\n" +
-		"• **Minimum Time Limit:** `30 minutes`\n" +
+		"• **Minimum Time Limit:** " + minDisplayLabel + "\n" +
 		"• **Maximum Time Limit:** `14 days`\n\n" +
 		"Select **Days**, **Hours**, and **Minutes** from the dropdown menus below, then click the green **Confirm Spoilered Photo Time Limit** button."
 	if statusNotice != "" {
@@ -327,7 +345,7 @@ func (h *SpoilerTTLHandler) buildPromptView(
 	}
 
 	embed := &discordgo.MessageEmbed{
-		Title:       "🕒 Spoilered Photo Auto-Delete Timer (TTL)",
+		Title:       "🔒 Privacy Mode • Spoilered Photo Auto-Delete Timer",
 		Description: desc,
 		Color:       0x5865F2,
 		Fields: []*discordgo.MessageEmbedField{
@@ -479,11 +497,41 @@ func (h *SpoilerTTLHandler) HandleMessageCreate(s *discordgo.Session, m *discord
 	}
 
 	ttl, ok := h.svc.GetUserTTL(guildID, m.Author.ID)
-	if !ok || ttl < domain.MinSpoilerPhotoTTL {
+	if !ok || ttl < domain.MinAdminSpoilerPhotoTTL {
 		return
 	}
 
 	h.svc.ScheduleSpoilerMessageDeletion(s, guildID, m.ChannelID, m.ID, m.Author.ID, ttl)
+}
+
+func (h *SpoilerTTLHandler) isCallerAdmin(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
+	if i == nil || i.Member == nil {
+		return false
+	}
+	if (i.Member.Permissions & discordgo.PermissionAdministrator) != 0 {
+		return true
+	}
+	guildID := i.GuildID
+	if guildID == "" && h.cfg != nil {
+		guildID = h.cfg.GuildID
+	}
+	if s != nil && s.State != nil && guildID != "" {
+		if g, err := s.State.Guild(guildID); err == nil && g != nil {
+			if i.Member.User != nil && g.OwnerID != "" && g.OwnerID == i.Member.User.ID {
+				return true
+			}
+			for _, r := range g.Roles {
+				if r != nil && (r.Permissions&discordgo.PermissionAdministrator) != 0 {
+					for _, mr := range i.Member.Roles {
+						if mr == r.ID {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 // IsSpoilerPhotoAttachment checks whether a Discord message attachment is a spoilered photo/image.

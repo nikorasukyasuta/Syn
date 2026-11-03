@@ -133,3 +133,18 @@ func TestVersionHandler_Pagination(t *testing.T) {
 	}
 }
 
+func TestBuildUpdateAnnouncementEmbed(t *testing.T) {
+	t.Parallel()
+
+	embed := handlers.BuildUpdateAnnouncementEmbed()
+	if embed == nil {
+		t.Fatal("expected non-nil update announcement embed")
+	}
+	if !strings.Contains(embed.Title, version.CurrentVersion) {
+		t.Errorf("expected announcement title to include %s, got %q", version.CurrentVersion, embed.Title)
+	}
+	if !strings.Contains(embed.Description, version.CurrentVersion) {
+		t.Errorf("expected announcement description to include %s", version.CurrentVersion)
+	}
+}
+

@@ -1,12 +1,17 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/bwmarrin/discordgo"
 
+	"syn/internal/config"
 	"syn/internal/version"
 )
 
@@ -19,12 +24,30 @@ const (
 	customIDVersionSelect = "select_version_page"
 )
 
-// VersionHandler handles the /version slash command and its interactive pagination controls.
-type VersionHandler struct{}
+// VersionHandler handles the /version slash command, its interactive pagination controls,
+// and posting bot update announcements to the server's announcement channel.
+type VersionHandler struct {
+	cfg    *config.Config
+	logger *slog.Logger
+}
 
 // NewVersionHandler creates a new VersionHandler.
-func NewVersionHandler() *VersionHandler {
-	return &VersionHandler{}
+func NewVersionHandler(opts ...func(*VersionHandler)) *VersionHandler {
+	h := &VersionHandler{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(h)
+		}
+	}
+	return h
+}
+
+// WithVersionConfig attaches runtime Config and Logger to VersionHandler.
+func WithVersionConfig(cfg *config.Config, logger *slog.Logger) func(*VersionHandler) {
+	return func(h *VersionHandler) {
+		h.cfg = cfg
+		h.logger = logger
+	}
 }
 
 // VersionCommandDefinition defines the /version application command.
@@ -292,3 +315,238 @@ func clampVersionPage(page int) int {
 	return page
 }
 
+// AnnounceUpdateCommandDefinition returns the Discord slash command schema for /announce-update (Staff/Admin).
+func AnnounceUpdateCommandDefinition() *discordgo.ApplicationCommand {
+	dmPermission := false
+
+	return &discordgo.ApplicationCommand{
+		Name:         "announce-update",
+		Description:  "[Staff] Post an embedded announcement in the announcement channel that the bot was recently updated",
+		DMPermission: &dmPermission,
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Name:        "channel",
+				Description: "Optional channel to post the announcement in (defaults to the server announcement channel)",
+				Type:        discordgo.ApplicationCommandOptionChannel,
+				Required:    false,
+				ChannelTypes: []discordgo.ChannelType{
+					discordgo.ChannelTypeGuildText,
+					discordgo.ChannelTypeGuildNews,
+				},
+			},
+		},
+	}
+}
+
+// HandleAnnounceUpdateCommand posts the embedded bot update announcement to the announcement channel.
+func (h *VersionHandler) HandleAnnounceUpdateCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	guildID := i.GuildID
+	var configuredChID string
+	if h.cfg != nil {
+		if guildID == "" {
+			guildID = h.cfg.GuildID
+		}
+		configuredChID = h.cfg.AnnouncementChannelID
+	}
+
+	targetChannelID := ""
+	for _, opt := range i.ApplicationCommandData().Options {
+		if opt.Name == "channel" {
+			if ch := opt.ChannelValue(s); ch != nil && ch.ID != "" {
+				targetChannelID = ch.ID
+			}
+		}
+	}
+
+	if targetChannelID == "" {
+		resolvedID, err := ResolveAnnouncementChannelID(s, guildID, configuredChID)
+		if err != nil {
+			_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: fmt.Sprintf("❌ Could not locate an announcement channel: %v", err),
+					Flags:   discordgo.MessageFlagsEphemeral,
+				},
+			})
+			return
+		}
+		targetChannelID = resolvedID
+	}
+
+	embed := BuildUpdateAnnouncementEmbed()
+	sentMsg, err := s.ChannelMessageSendEmbed(targetChannelID, embed)
+	if err != nil {
+		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: fmt.Sprintf("❌ Failed to post update announcement to <#%s>: %v", targetChannelID, err),
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	if h.logger != nil {
+		h.logger.Info("manually posted bot update announcement",
+			"channel_id", targetChannelID,
+			"message_id", sentMsg.ID,
+			"version", version.CurrentVersion,
+		)
+	}
+
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: fmt.Sprintf("✅ Posted the **%s** bot update announcement in <#%s>.", version.CurrentVersion, targetChannelID),
+			Flags:   discordgo.MessageFlagsEphemeral,
+		},
+	})
+}
+
+// BuildUpdateAnnouncementEmbed constructs a rich Discord embed announcing that the bot has been recently updated.
+func BuildUpdateAnnouncementEmbed() *discordgo.MessageEmbed {
+	rel := version.Release{
+		Version: version.CurrentVersion,
+		Date:    version.ReleaseDate,
+	}
+	if len(version.History) > 0 {
+		rel = version.History[0]
+	}
+
+	var changesList strings.Builder
+	for _, c := range rel.Changes {
+		changesList.WriteString(fmt.Sprintf("• %s\n", c))
+	}
+	if changesList.Len() == 0 {
+		changesList.WriteString("• General stability, security, and feature improvements.\n")
+	}
+
+	return &discordgo.MessageEmbed{
+		Title: fmt.Sprintf("📢 Syn Bot Update Announcement • %s", rel.Version),
+		Description: fmt.Sprintf(
+			"**Syn** has been recently updated to **%s** (`%s`)! 🚀\n\n"+
+				"We've rolled out new privacy features, verification improvements, and server enhancements. Check out what's new below:",
+			rel.Version,
+			rel.Date,
+		),
+		Color: 0x5865F2,
+		Fields: []*discordgo.MessageEmbedField{
+			{
+				Name:   fmt.Sprintf("✨ What's New in %s", rel.Version),
+				Value:  changesList.String(),
+				Inline: false,
+			},
+		},
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: fmt.Sprintf("Syn Discord Bot • Version %s • Released %s", rel.Version, rel.Date),
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+// EnsureUpdateAnnouncement locates the server's announcement channel and posts an embedded announcement
+// that the bot has been recently updated if an announcement for the current version has not already been posted.
+func (h *VersionHandler) EnsureUpdateAnnouncement(s *discordgo.Session, guildID string) (string, bool, error) {
+	var configuredChID string
+	if h.cfg != nil {
+		if guildID == "" {
+			guildID = h.cfg.GuildID
+		}
+		configuredChID = h.cfg.AnnouncementChannelID
+	}
+
+	channelID, err := ResolveAnnouncementChannelID(s, guildID, configuredChID)
+	if err != nil {
+		return "", false, err
+	}
+
+	// Check recent messages in the announcement channel so container restarts do not post duplicate announcements for the same version.
+	if msgs, err := s.ChannelMessages(channelID, 25, "", "", ""); err == nil {
+		for _, m := range msgs {
+			if m == nil {
+				continue
+			}
+			for _, emb := range m.Embeds {
+				if emb == nil {
+					continue
+				}
+				if strings.Contains(emb.Title, version.CurrentVersion) ||
+					(emb.Footer != nil && strings.Contains(emb.Footer.Text, "Version "+version.CurrentVersion)) {
+					return channelID, false, nil
+				}
+			}
+		}
+	}
+
+	embed := BuildUpdateAnnouncementEmbed()
+	if _, err := s.ChannelMessageSendEmbed(channelID, embed); err != nil {
+		return channelID, false, fmt.Errorf("sending update announcement embed: %w", err)
+	}
+
+	return channelID, true, nil
+}
+
+// ResolveAnnouncementChannelID finds the target announcement channel in the guild.
+// It checks configuredChannelID first, then searches guild channels by name ("announcements", "announcement", etc.)
+// or Discord's native GuildNews announcement channel type.
+func ResolveAnnouncementChannelID(s *discordgo.Session, guildID, configuredChannelID string) (string, error) {
+	if trimmed := strings.TrimSpace(configuredChannelID); trimmed != "" {
+		return trimmed, nil
+	}
+	if s == nil || strings.TrimSpace(guildID) == "" {
+		return "", errors.New("guild ID is required to resolve announcement channel")
+	}
+
+	channels, err := s.GuildChannels(guildID)
+	if err != nil {
+		return "", fmt.Errorf("fetching guild channels: %w", err)
+	}
+
+	bestID := ""
+	bestScore := 0
+
+	for _, ch := range channels {
+		if ch == nil {
+			continue
+		}
+		if ch.Type != discordgo.ChannelTypeGuildText && ch.Type != discordgo.ChannelTypeGuildNews {
+			continue
+		}
+
+		score := scoreAnnouncementChannel(ch)
+		if score > bestScore {
+			bestScore = score
+			bestID = ch.ID
+		}
+	}
+
+	if bestID == "" {
+		return "", errors.New("no announcement channel found in server")
+	}
+	return bestID, nil
+}
+
+func scoreAnnouncementChannel(ch *discordgo.Channel) int {
+	clean := cleanChannelName(ch.Name)
+	switch clean {
+	case "announcements", "announcement":
+		return 100
+	case "server-announcements", "bot-announcements", "bot-updates", "updates":
+		return 85
+	}
+	if strings.Contains(clean, "announcement") {
+		return 70
+	}
+	if ch.Type == discordgo.ChannelTypeGuildNews {
+		return 50
+	}
+	return 0
+}
+
+func cleanChannelName(raw string) string {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	trimmed := strings.TrimFunc(lower, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	return trimmed
+}

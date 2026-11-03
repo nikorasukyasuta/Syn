@@ -171,10 +171,10 @@ func TestIDVerificationService_FlowAndRBAC(t *testing.T) {
 		t.Fatalf("expected request status approved, got %+v", approvedReq)
 	}
 
-	// 5. Verified user cannot open a new ID verification request
-	_, err = svc.CheckCanOpenRequest(ctx, "guild_1", "user_100")
-	if !errors.Is(err, domain.ErrAlreadyVerified) {
-		t.Fatalf("expected ErrAlreadyVerified, got %v", err)
+	// 5. Verified user IS allowed to open a new ID verification request once their previous request is no longer pending
+	reopenReq, err := svc.CheckCanOpenRequest(ctx, "guild_1", "user_100")
+	if err != nil || reopenReq != nil {
+		t.Fatalf("expected verified user to be allowed to open a new ID verification request, got req=%v err=%v", reopenReq, err)
 	}
 
 	// 6. Staff checks status of user_100
