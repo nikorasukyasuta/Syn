@@ -290,3 +290,108 @@ func TestReactionRoleHandler_CheckRoleHierarchy(t *testing.T) {
 		t.Errorf("expected ok when state is uninitialized")
 	}
 }
+
+func TestDisambiguateDuplicateNamedRole(t *testing.T) {
+	t.Parallel()
+
+	guildRoles := []*discordgo.Role{
+		{ID: "role_switch_red", Name: "Switch", Color: 0xE74C3C},
+		{ID: "role_switch_blue", Name: "Switch", Color: 0x3498DB},
+		{ID: "role_unique", Name: "UniqueRole", Color: 0x2ECC71},
+	}
+
+	// Case 1: Neither duplicate role is bound yet -> keeps selected role_switch_red
+	resolved, changed := DisambiguateDuplicateNamedRole(guildRoles, nil, "panel_1", "role_switch_red")
+	if changed || resolved != "role_switch_red" {
+		t.Fatalf("expected role_switch_red unchanged when no roles bound, got resolved=%s changed=%v", resolved, changed)
+	}
+
+	// Case 2: role_switch_red is already bound on panel_1. Staff adds second "Switch" role to panel_2,
+	// and Discord's slash-command input defaults @Switch to role_switch_red -> automatically disambiguates to role_switch_blue!
+	existingBindings := []*domain.ReactionRole{
+		{
+			GuildID:   "guild_1",
+			MessageID: "panel_1",
+			RoleID:    "role_switch_red",
+		},
+	}
+	resolved2, changed2 := DisambiguateDuplicateNamedRole(guildRoles, existingBindings, "panel_2", "role_switch_red")
+	if !changed2 || resolved2 != "role_switch_blue" {
+		t.Fatalf("expected disambiguation to unbound role_switch_blue on panel_2, got resolved=%s changed=%v", resolved2, changed2)
+	}
+
+	// Case 3: Unique role name is never changed even if bound elsewhere
+	existingUnique := []*domain.ReactionRole{
+		{
+			GuildID:   "guild_1",
+			MessageID: "panel_1",
+			RoleID:    "role_unique",
+		},
+	}
+	resolved3, changed3 := DisambiguateDuplicateNamedRole(guildRoles, existingUnique, "panel_2", "role_unique")
+	if changed3 || resolved3 != "role_unique" {
+		t.Fatalf("expected unique role to remain unchanged, got resolved=%s changed=%v", resolved3, changed3)
+	}
+}
+
+func TestReactionRoleHandler_RemoveJoinAskToDMRoleWhenClaimingDMPreference(t *testing.T) {
+	t.Parallel()
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	handler := NewReactionRoleHandler(nil, silentLogger)
+	handler.SetDMRoles("role_join_ask_dm", "role_normal_ask_dm", "role_dms_open", "role_dms_closed")
+
+	var removedRoles []string
+	s, _ := discordgo.New("Bot mock")
+	s.Client.Transport = mockRT(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodDelete && strings.Contains(req.URL.Path, "/roles/") {
+			parts := strings.Split(req.URL.Path, "/roles/")
+			removedRoles = append(removedRoles, parts[len(parts)-1])
+		}
+		if req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/roles") {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(`[
+					{"id":"role_join_ask_dm","name":"Ask To DM"},
+					{"id":"role_normal_ask_dm","name":"Ask To DM"},
+					{"id":"role_dms_open","name":"DM's Open"},
+					{"id":"role_dms_closed","name":"DM's Closed"}
+				]`)),
+				Header: make(http.Header),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	// 1. User claims normal "Ask To DM" role -> removes role_join_ask_dm
+	removedRoles = nil
+	handler.removeJoinAskToDMRoleIfNeeded(s, "guild_1", "user_1", "role_normal_ask_dm")
+	if len(removedRoles) == 0 || removedRoles[0] != "role_join_ask_dm" {
+		t.Fatalf("expected role_join_ask_dm to be removed when claiming normal Ask To DM role, got %v", removedRoles)
+	}
+
+	// 2. User claims "DM's Open" role -> removes role_join_ask_dm (and any Ask To DM role)
+	removedRoles = nil
+	handler.removeJoinAskToDMRoleIfNeeded(s, "guild_1", "user_1", "role_dms_open")
+	if len(removedRoles) == 0 || removedRoles[0] != "role_join_ask_dm" {
+		t.Fatalf("expected role_join_ask_dm to be removed when claiming DM's Open role, got %v", removedRoles)
+	}
+
+	// 3. User claims "DM's Closed" role -> removes role_join_ask_dm
+	removedRoles = nil
+	handler.removeJoinAskToDMRoleIfNeeded(s, "guild_1", "user_1", "role_dms_closed")
+	if len(removedRoles) == 0 || removedRoles[0] != "role_join_ask_dm" {
+		t.Fatalf("expected role_join_ask_dm to be removed when claiming DM's Closed role, got %v", removedRoles)
+	}
+
+	// 4. User claims an unrelated role -> does NOT remove role_join_ask_dm
+	removedRoles = nil
+	handler.removeJoinAskToDMRoleIfNeeded(s, "guild_1", "user_1", "role_unrelated")
+	if len(removedRoles) != 0 {
+		t.Fatalf("expected no roles removed when claiming unrelated role, got %v", removedRoles)
+	}
+}

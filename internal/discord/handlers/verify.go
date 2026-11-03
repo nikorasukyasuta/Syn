@@ -16,16 +16,12 @@ import (
 
 // VerifyCommandDefinition returns the Discord Slash Command specification.
 func VerifyCommandDefinition() *discordgo.ApplicationCommand {
-	// Setting DefaultMemberPermissions to 0 hides the command from regular members by default.
-	// Server Admins can then explicitly grant visibility to Staff & Server Helper roles in Discord Server Settings.
-	var defaultPerms int64 = 0
 	dmPermission := false
 
 	return &discordgo.ApplicationCommand{
-		Name:                     "verify-member",
-		Description:              "[Staff/Helpers Only] Verify a member as 18+ and grant access role",
-		DefaultMemberPermissions: &defaultPerms,
-		DMPermission:             &dmPermission,
+		Name:         "verify-member",
+		Description:  "[Staff/Helpers/ID Reviewers] Verify a member as 18+ and grant access role",
+		DMPermission: &dmPermission,
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Type:        discordgo.ApplicationCommandOptionUser,

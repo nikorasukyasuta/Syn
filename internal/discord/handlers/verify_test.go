@@ -58,8 +58,8 @@ func TestVerifyCommandDefinition(t *testing.T) {
 	if cmd.Name != "verify-member" {
 		t.Fatalf("expected command name 'verify-member', got %s", cmd.Name)
 	}
-	if cmd.DefaultMemberPermissions == nil || *cmd.DefaultMemberPermissions != 0 {
-		t.Fatal("expected DefaultMemberPermissions to be 0")
+	if cmd.DefaultMemberPermissions != nil {
+		t.Fatal("expected DefaultMemberPermissions to be nil so Staff, Helpers, and ID Reviewers can invoke /verify-member without Administrator bit")
 	}
 	if cmd.DMPermission == nil || *cmd.DMPermission != false {
 		t.Fatal("expected DMPermission to be false")

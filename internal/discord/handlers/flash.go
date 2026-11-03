@@ -70,9 +70,9 @@ func FlashCommandDefinition() *discordgo.ApplicationCommand {
 				Options: []*discordgo.ApplicationCommandOption{
 					{
 						Name:        "duration",
-						Description: "Time before photos/messages are deleted (e.g. 30s, 5m, 1h, 24h)",
+						Description: "Time before photos/messages are deleted (defaults to 30m; e.g. 30m, 1h, 24h)",
 						Type:        discordgo.ApplicationCommandOptionString,
-						Required:    true,
+						Required:    false,
 					},
 					{
 						Name:        "channel",
@@ -148,9 +148,13 @@ func (h *FlashHandler) handleSetTimer(s *discordgo.Session, i *discordgo.Interac
 		}
 	}
 
+	if strings.TrimSpace(rawDuration) == "" {
+		rawDuration = "30m"
+	}
+
 	d, err := ParseFlashDuration(rawDuration)
 	if err != nil {
-		h.respondError(s, i, fmt.Sprintf("Invalid duration: %s. Examples: `30s`, `5m`, `1h`, `24h`.", err.Error()))
+		h.respondError(s, i, fmt.Sprintf("Invalid duration: %s. Examples: `30m`, `1h`, `24h`.", err.Error()))
 		return
 	}
 

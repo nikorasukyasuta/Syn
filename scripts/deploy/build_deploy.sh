@@ -105,6 +105,17 @@ fi
 # 2. Ensure required host directories exist prior to build/mount
 mkdir -p logs assets/panels config/filters backups
 
+# Guard: Prevent accidental deployment of 'development' mode on EC2 production stack
+if [[ -f .env ]]; then
+	configured_env=$(grep -E '^(APP_ENV|SYN_ENV)=' .env | tail -n 1 | cut -d '=' -f2- | tr -d "\"' " | tr '[:upper:]' '[:lower:]' || true)
+	if [[ "$configured_env" == "development" || "$configured_env" == "dev" || "$configured_env" == "local" ]]; then
+		echo "❌ Security Error: APP_ENV/SYN_ENV in .env is set to '${configured_env}'." >&2
+		echo "   Development mode is strictly restricted to local workstations and cannot run on EC2." >&2
+		echo "   Set APP_ENV=production in .env before deploying." >&2
+		exit 1
+	fi
+fi
+
 # 3. Optional Pre-Deployment Database Backup
 if [[ $BACKUP_DB -eq 1 ]]; then
 	if [[ -x "${PROJECT_DIR}/scripts/db/db_backup.sh" ]]; then

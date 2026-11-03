@@ -214,7 +214,7 @@ func TestRotatingFileWriter_ConcurrentWrites(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
-				_, _ = w.Write([]byte(fmt.Sprintf("worker %d line %d\n", id, j)))
+				_, _ = w.Write(fmt.Appendf(nil, "worker %d line %d\n", id, j))
 			}
 		}(i)
 	}

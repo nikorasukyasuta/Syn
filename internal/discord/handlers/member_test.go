@@ -88,3 +88,33 @@ func TestMemberJoinHandler_SyncUnassignedMembers(t *testing.T) {
 	}
 }
 
+func TestMemberJoinHandler_AssignsJoinAskToDMRoleAndMatchesNames(t *testing.T) {
+	t.Parallel()
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	session := newMockSession(http.StatusOK, `{}`)
+
+	h := handlers.NewMemberJoinHandler("guild_1", "role_unverified_123", silentLogger)
+	h.SetJoinAskToDMRole("role_join_ask_to_dm_456")
+
+	h.HandleGuildMemberAdd(session, &discordgo.GuildMemberAdd{
+		Member: &discordgo.Member{
+			GuildID: "guild_1",
+			User: &discordgo.User{
+				ID:       "user_new_member",
+				Username: "newcomer",
+				Bot:      false,
+			},
+		},
+	})
+
+	for _, name := range []string{"Ask To DM", "ask to dm", "DM's Open", "DMs Open", "DM's Closed", "DMs Closed"} {
+		if !handlers.IsDMPreferenceRoleName(name) {
+			t.Fatalf("expected %q to be recognized as a DM preference role name", name)
+		}
+	}
+	if handlers.IsDMPreferenceRoleName("Verified") {
+		t.Fatal("did not expect 'Verified' to be recognized as a DM preference role name")
+	}
+}
+

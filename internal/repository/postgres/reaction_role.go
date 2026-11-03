@@ -116,6 +116,36 @@ func (r *ReactionRoleRepo) ListByMessage(ctx context.Context, guildID, messageID
 	return results, rows.Err()
 }
 
+// ListByGuild returns all reaction roles bound across all panels in a guild in chronological order.
+func (r *ReactionRoleRepo) ListByGuild(ctx context.Context, guildID string) ([]*domain.ReactionRole, error) {
+	const query = `
+		SELECT id, guild_id, channel_id, message_id, emoji_api_name, emoji_display,
+		       role_id, description, requires_verified, created_by_id, created_at
+		FROM reaction_roles
+		WHERE guild_id = $1
+		ORDER BY created_at ASC
+	`
+	rows, err := r.pool.Query(ctx, query, guildID)
+	if err != nil {
+		return nil, fmt.Errorf("listing reaction roles for guild: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*domain.ReactionRole
+	for rows.Next() {
+		var rr domain.ReactionRole
+		if err := rows.Scan(
+			&rr.ID, &rr.GuildID, &rr.ChannelID, &rr.MessageID,
+			&rr.EmojiAPIName, &rr.EmojiDisplay, &rr.RoleID, &rr.Description,
+			&rr.RequiresVerified, &rr.CreatedByID, &rr.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scanning reaction role row: %w", err)
+		}
+		results = append(results, &rr)
+	}
+	return results, rows.Err()
+}
+
 // DeleteMapping removes a reaction role configuration from a message.
 func (r *ReactionRoleRepo) DeleteMapping(ctx context.Context, guildID, messageID, emojiAPIName string) error {
 	const query = `

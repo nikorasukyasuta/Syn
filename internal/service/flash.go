@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,6 +57,23 @@ func (s *FlashDashService) Init(ctx context.Context, session *discordgo.Session,
 		s.logger.Info("loaded flash and dash channels into memory", "count", len(configs))
 	}
 
+	// 1b. Auto-discover any guild channel named "flash-and-dash" or "flash-&-dash" and ensure it has a 30-minute timer
+	if session != nil && guildID != "" {
+		if guildChannels, gErr := session.GuildChannels(guildID); gErr == nil {
+			for _, ch := range guildChannels {
+				if ch == nil || ch.Type != discordgo.ChannelTypeGuildText {
+					continue
+				}
+				lower := strings.ToLower(strings.TrimSpace(ch.Name))
+				if lower == "flash-and-dash" || lower == "flash-&-dash" || strings.Contains(lower, "flash-and-dash") {
+					if _, exists := s.GetChannelDuration(ch.ID); !exists {
+						_ = s.ConfigureChannel(ctx, guildID, ch.ID, domain.DefaultFlashDashDuration)
+					}
+				}
+			}
+		}
+	}
+
 	// 2. Process and resume pending message deletions
 	pending, err := s.repo.ListPendingMessages(ctx)
 	if err != nil {
@@ -85,7 +103,11 @@ func (s *FlashDashService) Init(ctx context.Context, session *discordgo.Session,
 }
 
 // ConfigureChannel binds a channel to Flash and Dash auto-deletion with the given TTL.
+// If d is 0, it defaults to 30 minutes (domain.DefaultFlashDashDuration).
 func (s *FlashDashService) ConfigureChannel(ctx context.Context, guildID, channelID string, d time.Duration) error {
+	if d == 0 {
+		d = domain.DefaultFlashDashDuration
+	}
 	if d < 10*time.Second {
 		return fmt.Errorf("duration must be at least 10 seconds")
 	}

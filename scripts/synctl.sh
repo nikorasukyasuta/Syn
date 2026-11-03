@@ -20,6 +20,23 @@ case "$SUBCMD" in
 	deploy|build)
 		exec "${SCRIPT_DIR}/deploy/build_deploy.sh" "$@"
 		;;
+	dev|local-dev)
+		# Verify we are not running on an AWS EC2 instance before starting local dev mode
+		for dmi_path in /sys/devices/virtual/dmi/id/sys_vendor /sys/devices/virtual/dmi/id/board_vendor /sys/devices/virtual/dmi/id/bios_vendor /sys/devices/virtual/dmi/id/product_name /sys/devices/virtual/dmi/id/chassis_asset_tag; do
+			if [[ -r "$dmi_path" ]] && grep -qi "amazon ec2" "$dmi_path" 2>/dev/null; then
+				echo "❌ Security Violation: 'synctl.sh dev' cannot be executed on an AWS EC2 instance." >&2
+				exit 1
+			fi
+		done
+		if [[ -f /var/lib/cloud/data/instance-id ]] && grep -qE '^i-[0-9a-f]+' /var/lib/cloud/data/instance-id 2>/dev/null; then
+			echo "❌ Security Violation: 'synctl.sh dev' cannot be executed on an AWS EC2 instance." >&2
+			exit 1
+		fi
+		PROJECT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+		cd "$PROJECT_DIR"
+		echo "🧪 Starting Syn Bot in LOCAL DEVELOPMENT mode (APP_ENV=development)..."
+		exec env APP_ENV=development go run ./cmd/bot/main.go -dev "$@"
+		;;
 	logs|log)
 		exec "${SCRIPT_DIR}/logs/logs.sh" "$@"
 		;;
@@ -39,6 +56,9 @@ case "$SUBCMD" in
 	dbeaver)
 		exec "${SCRIPT_DIR}/db/open_db_for_dbeaver.sh" "$@"
 		;;
+	domain|ssl)
+		exec "${SCRIPT_DIR}/ops/setup_domain_ssl.sh" "$@"
+		;;
 	setup|check|audit|init-config|swap|systemd|cron)
 		if [[ "$SUBCMD" == "setup" ]]; then
 			exec "${SCRIPT_DIR}/ops/ec2_setup.sh" "$@"
@@ -53,8 +73,9 @@ case "$SUBCMD" in
 ================================================================================
 Usage: $0 <command> [options]
 
-Deployment (scripts/deploy/):
-  deploy [--pull] [--backup] [--bot-only]   Build & deploy latest containers
+Deployment & Local Development:
+  deploy [--pull] [--backup] [--bot-only]   Build & deploy latest containers (Production EC2)
+  dev                                       Run bot locally in development mode (Blocked on EC2)
 
 Logs & Telemetry (scripts/logs/):
   logs [--bot|--db|--file|--metrics]        Stream or filter logs
@@ -78,7 +99,8 @@ Database & Backups (scripts/db/):
   db-summary                                Show row counts & sizes per table
   dbeaver [start|stop|status] [--ssh-only]  Manage remote DBeaver access
 
-EC2 Host Setup & Hardening (scripts/ops/):
+EC2 Host Setup, Domain & Hardening (scripts/ops/):
+  domain [guide|check|setup] <domain>       Configure Namecheap domain + Elastic IP + HTTPS
   check                                     Audit EC2 host, .env, Swap, & Docker
   init-config                               Scaffold .env and config files
   swap                                      Provision 2GB /swapfile (sudo)

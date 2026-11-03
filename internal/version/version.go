@@ -7,9 +7,9 @@ import (
 
 // Current version and source repository constants.
 const (
-	CurrentVersion   = "v1.2.3"
+	CurrentVersion   = "v1.2.4"
 	GitRepositoryURL = "https://github.com/nikorasukyasuta/Syn"
-	ReleaseDate      = "2026-10-28"
+	ReleaseDate      = "2026-11-03"
 )
 
 // Release represents a version milestone with date and feature highlights.
@@ -21,6 +21,17 @@ type Release struct {
 
 // History contains the chronological release log for the Syn bot.
 var History = []Release{
+	{
+		Version: "v1.2.4",
+		Date:    "2026-11-03",
+		Changes: []string{
+			"Updated dependencies and resolved minor issues",
+			"Improved documentation and code readability",
+			"Flash and Dash feature further enhanced with improved auto-deletion and channel management",
+			"Personal Photo Deletion for Spoilered Images of your own posts in any channels",
+			"Ask To DM role granted on users joining the server automatically to limit direct messages from other users, auto removes on claiming DM status role",
+		},
+	},
 	{
 		Version: "v1.2.3",
 		Date:    "2026-10-28",

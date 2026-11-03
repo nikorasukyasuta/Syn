@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -110,8 +111,8 @@ func TestIDVerifyCommandDefinition(t *testing.T) {
 	if cmd.Name != "id-verify" {
 		t.Fatalf("expected command name 'id-verify', got %s", cmd.Name)
 	}
-	if cmd.DefaultMemberPermissions == nil || *cmd.DefaultMemberPermissions != 0 {
-		t.Fatal("expected DefaultMemberPermissions to be 0 (Staff-gated)")
+	if cmd.DefaultMemberPermissions != nil {
+		t.Fatal("expected DefaultMemberPermissions to be nil so ID Reviewers, Helpers, and Staff can invoke /id-verify without Administrator bit")
 	}
 	if cmd.DMPermission == nil || *cmd.DMPermission != false {
 		t.Fatal("expected DMPermission to be false")
@@ -157,16 +158,40 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 	idRepo := newMockIDVerifyRepoHandler()
 	vRepo := newMockVerifyRepoStateful()
 	cfg := &config.Config{
-		GuildID:          "guild_1",
-		VerifiedRoleID:   "role_verified",
-		UnverifiedRoleID: "role_unverified",
-		StaffRoleIDs:     []string{"role_staff"},
+		GuildID:             "guild_1",
+		VerifiedRoleID:      "role_verified",
+		IDVerifiedRoleID:    "role_id_verified",
+		UnverifiedRoleID:    "role_unverified",
+		StaffRoleIDs:        []string{"role_staff"},
+		ServerHelperRoleIDs: []string{"role_helper"},
+		IDCheckerRoleIDs:    []string{"role_id_reviewer"},
 	}
 	lockMgr := syncutil.NewUserLockManager()
 	svc := service.NewIDVerificationService(idRepo, vRepo, nil, cfg.StaffRoleIDs, logger)
 	h := handlers.NewIDVerifyHandler(svc, cfg, nil, lockMgr, logger)
 
-	session := newMockSession(http.StatusOK, `{"id": "ch_id_verify_100"}`)
+	var roleMu sync.Mutex
+	grantedRoles := make(map[string]bool)
+	session, _ := discordgo.New("Bot test_token")
+	session.StateEnabled = true
+	session.State.User = &discordgo.User{ID: "bot_id"}
+	session.Client = &http.Client{
+		Transport: mockRoundTripper(func(req *http.Request) (*http.Response, error) {
+			if req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/members/applicant_1/roles/") {
+				parts := strings.Split(req.URL.Path, "/roles/")
+				if len(parts) == 2 {
+					roleMu.Lock()
+					grantedRoles[parts[1]] = true
+					roleMu.Unlock()
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"id": "ch_id_verify_100"}`)),
+			}, nil
+		}),
+	}
 
 	// 1. Non-staff member attempting to invoke /id-verify panel is blocked
 	unauthCmd := &discordgo.InteractionCreate{
@@ -191,12 +216,13 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 	}
 	h.HandleIDVerifyCommand(session, unauthCmd)
 
-	// 2. Staff posts /id-verify panel
-	panelCmd := &discordgo.InteractionCreate{
+	// 2. Staff attempting to run /id-verify outside an ID verification ticket channel (e.g. ch_general) is blocked
+	outsideTicketCmd := &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
-			ID:      "int_panel",
-			GuildID: "guild_1",
-			Type:    discordgo.InteractionApplicationCommand,
+			ID:        "int_outside_ticket",
+			GuildID:   "guild_1",
+			ChannelID: "ch_general",
+			Type:      discordgo.InteractionApplicationCommand,
 			Member: &discordgo.Member{
 				User:  &discordgo.User{ID: "staff_user"},
 				Roles: []string{"role_staff"},
@@ -205,14 +231,24 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 				Name: "id-verify",
 				Options: []*discordgo.ApplicationCommandInteractionDataOption{
 					{
-						Name: "panel",
+						Name: "approve",
 						Type: discordgo.ApplicationCommandOptionSubCommand,
+						Options: []*discordgo.ApplicationCommandInteractionDataOption{
+							{
+								Name:  "member",
+								Type:  discordgo.ApplicationCommandOptionUser,
+								Value: "applicant_1",
+							},
+						},
 					},
 				},
 			},
 		},
 	}
-	h.HandleIDVerifyCommand(session, panelCmd)
+	h.HandleIDVerifyCommand(session, outsideTicketCmd)
+	if verOutside, _ := vRepo.GetByUserID(context.Background(), "guild_1", "applicant_1"); verOutside != nil && verOutside.IsVerified {
+		t.Fatal("expected /id-verify approve outside an ID verification ticket channel to be rejected")
+	}
 
 	// 3. Regular user clicks "btn_id_verify_start" to open their private ID verification channel
 	startClick := &discordgo.InteractionCreate{
@@ -261,7 +297,7 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 		t.Fatal("expected applicant_1 to NOT be verified when non-staff clicks approve")
 	}
 
-	// 5. Staff runs /id-verify approve inside the channel
+	// 5. ID Reviewer (role_id_reviewer) runs /id-verify approve inside the channel
 	approveCmd := &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
 			ID:        "int_approve",
@@ -269,8 +305,8 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 			ChannelID: "ch_id_verify_100",
 			Type:      discordgo.InteractionApplicationCommand,
 			Member: &discordgo.Member{
-				User:  &discordgo.User{ID: "staff_user"},
-				Roles: []string{"role_staff"},
+				User:  &discordgo.User{ID: "reviewer_user"},
+				Roles: []string{"role_id_reviewer"},
 			},
 			Data: discordgo.ApplicationCommandInteractionData{
 				Name: "id-verify",
@@ -297,12 +333,21 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 		t.Fatal("expected applicant_1 to be verified after staff approval")
 	}
 
-	// 6. Staff runs /id-verify status for applicant_1
+	roleMu.Lock()
+	gotVerified := grantedRoles["role_verified"]
+	gotIDVerified := grantedRoles["role_id_verified"]
+	roleMu.Unlock()
+	if !gotVerified || !gotIDVerified {
+		t.Fatalf("expected both role_verified (%v) and role_id_verified (%v) to be granted upon ID verification approval", gotVerified, gotIDVerified)
+	}
+
+	// 6. Staff runs /id-verify status for applicant_1 inside the ID verification ticket channel
 	statusCmd := &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
-			ID:      "int_status",
-			GuildID: "guild_1",
-			Type:    discordgo.InteractionApplicationCommand,
+			ID:        "int_status",
+			GuildID:   "guild_1",
+			ChannelID: "ch_id_verify_100",
+			Type:      discordgo.InteractionApplicationCommand,
 			Member: &discordgo.Member{
 				User:  &discordgo.User{ID: "staff_user"},
 				Roles: []string{"role_staff"},
@@ -327,12 +372,13 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 	}
 	h.HandleIDVerifyCommand(session, statusCmd)
 
-	// 7. Staff runs /id-verify revoke for applicant_1
+	// 7. Staff runs /id-verify revoke for applicant_1 inside the ID verification ticket channel
 	revokeCmd := &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
-			ID:      "int_revoke",
-			GuildID: "guild_1",
-			Type:    discordgo.InteractionApplicationCommand,
+			ID:        "int_revoke",
+			GuildID:   "guild_1",
+			ChannelID: "ch_id_verify_100",
+			Type:      discordgo.InteractionApplicationCommand,
 			Member: &discordgo.Member{
 				User:  &discordgo.User{ID: "staff_user"},
 				Roles: []string{"role_staff"},
@@ -365,6 +411,26 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 	verRevoked, _ := vRepo.GetByUserID(context.Background(), "guild_1", "applicant_1")
 	if verRevoked == nil || verRevoked.IsVerified {
 		t.Fatal("expected applicant_1 verification to be revoked")
+	}
+
+	// 8. Member who already holds the dedicated IDVerifiedRoleID is blocked from opening a duplicate session
+	alreadyIDVerifiedClick := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			ID:      "int_already_idv",
+			GuildID: "guild_1",
+			Type:    discordgo.InteractionMessageComponent,
+			Member: &discordgo.Member{
+				User:  &discordgo.User{ID: "applicant_idv", Username: "alreadyidv"},
+				Roles: []string{"role_verified", "role_id_verified"},
+			},
+			Data: discordgo.MessageComponentInteractionData{
+				CustomID: "btn_id_verify_start",
+			},
+		},
+	}
+	h.HandleComponentInteraction(session, alreadyIDVerifiedClick)
+	if dupReq, _ := idRepo.GetPendingRequestByUser(context.Background(), "guild_1", "applicant_idv"); dupReq != nil {
+		t.Fatalf("expected member already holding role_id_verified to not create a new request, got %+v", dupReq)
 	}
 }
 

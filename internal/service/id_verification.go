@@ -5,17 +5,19 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"syn/internal/domain"
 )
 
 // IDVerificationService orchestrates the dedicated 18+ ID verification workflow,
-// enforcing staff-only RBAC for approvals, denials, revocations, and status checks.
+// enforcing RBAC for Server Staff, Server Helpers, and ID Reviewers/Checkers.
 type IDVerificationService struct {
 	idRepo         domain.IDVerificationRepository
 	verifyRepo     domain.VerificationRepository
 	auditRepo      domain.AuditRepository
+	mu             sync.RWMutex
 	allowedRoleSet map[string]struct{}
 	logger         *slog.Logger
 }
@@ -30,7 +32,9 @@ func NewIDVerificationService(
 ) *IDVerificationService {
 	roleSet := make(map[string]struct{}, len(allowedRoleIDs))
 	for _, id := range allowedRoleIDs {
-		roleSet[id] = struct{}{}
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			roleSet[trimmed] = struct{}{}
+		}
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -45,8 +49,31 @@ func NewIDVerificationService(
 	}
 }
 
-// IsStaff checks if the caller possesses at least one configured Staff or Server Helper role.
+// AddAllowedRoles registers additional role IDs (such as ID Reviewers, ID Checkers,
+// and Server Helpers) as authorized to view and process 18+ ID verification tickets.
+func (s *IDVerificationService) AddAllowedRoles(roleIDs ...string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.allowedRoleSet == nil {
+		s.allowedRoleSet = make(map[string]struct{})
+	}
+	for _, id := range roleIDs {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			s.allowedRoleSet[trimmed] = struct{}{}
+		}
+	}
+}
+
+// IsStaff checks if the caller possesses at least one configured Staff, Server Helper, or ID Reviewer role.
 func (s *IDVerificationService) IsStaff(callerRoles []string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	for _, r := range callerRoles {
 		if _, ok := s.allowedRoleSet[r]; ok {
 			return true
@@ -55,24 +82,14 @@ func (s *IDVerificationService) IsStaff(callerRoles []string) bool {
 	return false
 }
 
-// CheckCanOpenRequest verifies that a member is not already 18+ verified and does not already have
-// an open pending ID verification channel.
+// CheckCanOpenRequest verifies that a member does not already have an open pending ID verification channel
+// and is not already verified.
 func (s *IDVerificationService) CheckCanOpenRequest(
 	ctx context.Context,
 	guildID, userID string,
 ) (*domain.IDVerificationRequest, error) {
 	if guildID == "" || userID == "" {
 		return nil, domain.ErrInvalidInput
-	}
-
-	if s.verifyRepo != nil {
-		existing, err := s.verifyRepo.GetByUserID(ctx, guildID, userID)
-		if err != nil {
-			return nil, err
-		}
-		if existing != nil && existing.IsVerified {
-			return nil, domain.ErrAlreadyVerified
-		}
 	}
 
 	if s.idRepo != nil {
@@ -82,6 +99,16 @@ func (s *IDVerificationService) CheckCanOpenRequest(
 		}
 		if pending != nil && pending.Status == domain.IDVerificationStatusPending {
 			return pending, domain.ErrIDVerifyRequestAlreadyOpen
+		}
+	}
+
+	if s.verifyRepo != nil {
+		existing, err := s.verifyRepo.GetByUserID(ctx, guildID, userID)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil && existing.IsVerified {
+			return nil, domain.ErrAlreadyVerified
 		}
 	}
 

@@ -31,9 +31,11 @@ type Bot struct {
 	versionHandler  *handlers.VersionHandler
 	filterHandler   *handlers.FilterHandler
 	flashHandler    *handlers.FlashHandler
-	legalHandler    *handlers.LegalHandler
-	idVerifyHandler *handlers.IDVerifyHandler
-	cmdQueue        *queue.CommandQueue
+	legalHandler      *handlers.LegalHandler
+	idVerifyHandler   *handlers.IDVerifyHandler
+	templateHandler   *handlers.TemplateHandler
+	spoilerTTLHandler *handlers.SpoilerTTLHandler
+	cmdQueue          *queue.CommandQueue
 	lockMgr         *syncutil.UserLockManager
 	rateLimiter     *ratelimit.UserRateLimiter
 	cache           *cache.ResourceCache
@@ -97,11 +99,11 @@ func NewBot(
 		cache:           resCache,
 	}
 
-	// 1. Register /verify-member (Staff & Server Helpers Only)
+	// 1. Register /verify-member (Server Staff, Server Helpers & ID Checkers)
 	if verifyHandler != nil {
 		b.RegisterCommand(
 			handlers.VerifyCommandDefinition(),
-			b.wrapHandler(verifyHandler.HandleVerifyCommand, true, false),
+			b.wrapRolesHandler(verifyHandler.HandleVerifyCommand, b.cfg.IDVerifyReviewerRoleIDs(), false),
 		)
 	}
 
@@ -230,14 +232,43 @@ func (b *Bot) RegisterCommand(cmd *discordgo.ApplicationCommand, handler Interac
 	b.registeredCmds = append(b.registeredCmds, cmd)
 }
 
-// SetIDVerifyHandler registers the dedicated 18+ ID Verification command suite (Staff Only)
-// and binds its component and modal handlers.
+// SetIDVerifyHandler registers the dedicated 18+ ID Verification command suite
+// (accessible to Server Staff, Server Helpers, and ID Checkers) and binds its component and modal handlers.
 func (b *Bot) SetIDVerifyHandler(h *handlers.IDVerifyHandler) {
 	b.idVerifyHandler = h
 	if h != nil {
 		b.RegisterCommand(
 			handlers.IDVerifyCommandDefinition(),
-			b.wrapHandler(h.HandleIDVerifyCommand, true, false),
+			b.wrapRolesHandler(h.HandleIDVerifyCommand, b.cfg.IDVerifyReviewerRoleIDs(), false),
+		)
+	}
+}
+
+// SetSpoilerTTLHandler registers the public /spoiler-ttl command, component interaction handler,
+// and automatic spoilered photo TTL message listener.
+func (b *Bot) SetSpoilerTTLHandler(h *handlers.SpoilerTTLHandler) {
+	b.spoilerTTLHandler = h
+	if h != nil {
+		b.RegisterCommand(
+			handlers.SpoilerTTLCommandDefinition(),
+			b.wrapHandler(h.HandleSpoilerTTLCommand, false, false),
+		)
+		b.session.AddHandler(h.HandleMessageCreate)
+	}
+}
+
+// SetTemplateHandler registers the Administrator-gated server template export and apply
+// slash commands (/template-export and /template-apply).
+func (b *Bot) SetTemplateHandler(h *handlers.TemplateHandler) {
+	b.templateHandler = h
+	if h != nil {
+		b.RegisterCommand(
+			handlers.TemplateExportCommandDefinition(),
+			b.wrapAdminHandler(h.HandleExportCommand),
+		)
+		b.RegisterCommand(
+			handlers.TemplateApplyCommandDefinition(),
+			b.wrapAdminHandler(h.HandleApplyCommand),
 		)
 	}
 }
@@ -297,7 +328,7 @@ func (b *Bot) Start() error {
 	// Sweep server to ensure all unassigned human members receive the unverified role
 	if b.memberHandler != nil && b.cfg.UnverifiedRoleID != "" {
 		go func() {
-			if err := b.memberHandler.SyncUnassignedMembers(b.session, b.cfg.VerifiedRoleID); err != nil {
+			if err := b.memberHandler.SyncUnassignedMembers(b.session, b.cfg.VerifiedRoleID, b.cfg.IDVerifiedRoleID); err != nil {
 				b.logger.Warn("unverified member sync sweep completed with warning", "error", err)
 			}
 		}()
@@ -344,9 +375,17 @@ func (b *Bot) Stop() error {
 // 3. WithTimeoutGuard: Ensures slow commands auto-defer before 1.5s, preventing Discord 3s timeouts
 // 4. RequireRoles: Enforces staff role authorization when required
 func (b *Bot) wrapHandler(handler InteractionHandlerFunc, staffOnly bool, exemptFromRateLimit bool) InteractionHandlerFunc {
-	h := handler
+	var allowedRoles []string
 	if staffOnly {
-		h = RequireRoles(b.cfg.StaffRoleIDs, b.logger, h)
+		allowedRoles = b.cfg.TicketStaffRoleIDs()
+	}
+	return b.wrapRolesHandler(handler, allowedRoles, exemptFromRateLimit)
+}
+
+func (b *Bot) wrapRolesHandler(handler InteractionHandlerFunc, allowedRoles []string, exemptFromRateLimit bool) InteractionHandlerFunc {
+	h := handler
+	if len(allowedRoles) > 0 {
+		h = RequireRoles(allowedRoles, b.logger, h)
 	}
 	h = WithTimeoutGuard(1200*time.Millisecond, h)
 
@@ -354,7 +393,19 @@ func (b *Bot) wrapHandler(handler InteractionHandlerFunc, staffOnly bool, exempt
 	if exemptFromRateLimit {
 		exempt = []string{"red"}
 	}
-	h = RateLimit(b.rateLimiter, b.cfg.StaffRoleIDs, exempt, b.logger, h)
+	h = RateLimit(b.rateLimiter, b.cfg.IDVerifyReviewerRoleIDs(), exempt, b.logger, h)
+	return RecoverPanic(b.logger, h)
+}
+
+// wrapAdminHandler constructs an enterprise middleware pipeline for Administrator-only commands:
+// 1. RecoverPanic: Catches runtime panics gracefully
+// 2. RateLimit: Protects bot from user command flood
+// 3. WithTimeoutGuard: Ensures slow commands auto-defer before 1.5s
+// 4. RequireAdmin: Strictly enforces Discord Administrator permission or Guild Ownership
+func (b *Bot) wrapAdminHandler(handler InteractionHandlerFunc) InteractionHandlerFunc {
+	h := RequireAdmin(b.logger, handler)
+	h = WithTimeoutGuard(1200*time.Millisecond, h)
+	h = RateLimit(b.rateLimiter, b.cfg.StaffRoleIDs, nil, b.logger, h)
 	return RecoverPanic(b.logger, h)
 }
 
@@ -503,6 +554,14 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 				respondForbidden(s, i, fmt.Sprintf("⏱️ **Slow down!** You are clicking buttons too quickly. Please wait %d second(s).", waitSec))
 				break
 			}
+		}
+
+		if b.versionHandler != nil && b.versionHandler.HandleComponentInteraction(s, i) {
+			break
+		}
+
+		if b.spoilerTTLHandler != nil && b.spoilerTTLHandler.HandleComponentInteraction(s, i) {
+			break
 		}
 
 		if b.filterHandler != nil && b.filterHandler.HandleComponentInteraction(s, i) {

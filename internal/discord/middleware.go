@@ -63,6 +63,67 @@ func RequireRoles(allowedRoleIDs []string, logger *slog.Logger, next Interaction
 	}
 }
 
+// RequireAdmin restricts command execution exclusively to Discord Server Administrators
+// (members with the PermissionAdministrator bitmask or server ownership).
+func RequireAdmin(logger *slog.Logger, next InteractionHandlerFunc) InteractionHandlerFunc {
+	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		if i.GuildID == "" || i.Member == nil || i.Member.User == nil {
+			respondForbidden(s, i, "This command can only be used inside the server.")
+			return
+		}
+
+		if !IsMemberAdministrator(s, i.GuildID, i.Member) {
+			cmdName := ""
+			if data, ok := i.Data.(discordgo.ApplicationCommandInteractionData); ok {
+				cmdName = data.Name
+			}
+
+			logger.Warn("non-admin command attempt blocked at middleware",
+				"user_id", i.Member.User.ID,
+				"username", i.Member.User.Username,
+				"command", cmdName,
+			)
+			respondForbidden(s, i, "⛔ Access Denied: Only **Server Administrators** can run this command.")
+			return
+		}
+
+		next(s, i)
+	}
+}
+
+// IsMemberAdministrator checks whether a guild member holds the Discord Administrator permission
+// directly via their interaction permission bitmask, via one of their assigned guild roles, or as guild owner.
+func IsMemberAdministrator(s *discordgo.Session, guildID string, member *discordgo.Member) bool {
+	if member == nil {
+		return false
+	}
+	if (member.Permissions & discordgo.PermissionAdministrator) != 0 {
+		return true
+	}
+	if s == nil || guildID == "" {
+		return false
+	}
+	if s.State != nil {
+		if g, err := s.State.Guild(guildID); err == nil && g != nil {
+			if member.User != nil && g.OwnerID != "" && g.OwnerID == member.User.ID {
+				return true
+			}
+			rolePermMap := make(map[string]int64, len(g.Roles))
+			for _, r := range g.Roles {
+				if r != nil {
+					rolePermMap[r.ID] = r.Permissions
+				}
+			}
+			for _, rid := range member.Roles {
+				if (rolePermMap[rid] & discordgo.PermissionAdministrator) != 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // RateLimit enforces an in-memory token bucket rate limit on users to prevent spam
 // from degrading bot responsiveness or consuming Discord API rate limit buckets.
 func RateLimit(

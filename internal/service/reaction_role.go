@@ -51,6 +51,16 @@ func NewReactionRoleService(
 	}
 }
 
+// AddProtectedRoles registers additional role IDs (such as IDVerifiedRoleID and UnverifiedRoleID)
+// that must never be bound to a self-assignable reaction role panel.
+func (s *ReactionRoleService) AddProtectedRoles(roleIDs ...string) {
+	for _, id := range roleIDs {
+		if id != "" {
+			s.protectedRoleSet[id] = struct{}{}
+		}
+	}
+}
+
 // LoadPanelAssets validates RBAC and loads the requested banner/thumbnail files from the EC2 disk.
 func (s *ReactionRoleService) LoadPanelAssets(
 	ctx context.Context,
@@ -291,6 +301,17 @@ func (s *ReactionRoleService) ListMessageBindings(
 	guildID, messageID string,
 ) ([]*domain.ReactionRole, error) {
 	return s.rrRepo.ListByMessage(ctx, guildID, messageID)
+}
+
+// ListGuildBindings retrieves all configured emoji-role pairs across all panels in a guild.
+func (s *ReactionRoleService) ListGuildBindings(
+	ctx context.Context,
+	guildID string,
+) ([]*domain.ReactionRole, error) {
+	if s.rrRepo == nil {
+		return nil, nil
+	}
+	return s.rrRepo.ListByGuild(ctx, guildID)
 }
 
 func (s *ReactionRoleService) logAudit(ctx context.Context, actorID, targetID, action string) {

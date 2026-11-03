@@ -19,9 +19,13 @@ import (
 
 // ReactionRoleHandler manages panel post creation, role linking, and live reaction events.
 type ReactionRoleHandler struct {
-	svc     *service.ReactionRoleService
-	lockMgr *syncutil.UserLockManager
-	logger  *slog.Logger
+	svc               *service.ReactionRoleService
+	lockMgr           *syncutil.UserLockManager
+	logger            *slog.Logger
+	joinAskToDMRoleID string
+	askToDMRoleID     string
+	dmsOpenRoleID     string
+	dmsClosedRoleID   string
 }
 
 // NewReactionRoleHandler constructs a new ReactionRoleHandler.
@@ -32,6 +36,16 @@ func NewReactionRoleHandler(svc *service.ReactionRoleService, logger *slog.Logge
 // SetLockManager attaches a UserLockManager for serializing concurrent member role changes.
 func (h *ReactionRoleHandler) SetLockManager(lm *syncutil.UserLockManager) {
 	h.lockMgr = lm
+}
+
+// SetDMRoles configures the initial join "Ask To DM" role ID and the reaction panel's
+// normal "Ask To DM", "DM's Open", and "DM's Closed" role IDs so claiming any of those
+// automatically removes the initial join "Ask To DM" role.
+func (h *ReactionRoleHandler) SetDMRoles(joinAskToDMRoleID, askToDMRoleID, dmsOpenRoleID, dmsClosedRoleID string) {
+	h.joinAskToDMRoleID = strings.TrimSpace(joinAskToDMRoleID)
+	h.askToDMRoleID = strings.TrimSpace(askToDMRoleID)
+	h.dmsOpenRoleID = strings.TrimSpace(dmsOpenRoleID)
+	h.dmsClosedRoleID = strings.TrimSpace(dmsClosedRoleID)
 }
 
 // HandlePanelCommand routes /reaction-panel subcommands (create, set-image, add-role, remove-role).
@@ -68,16 +82,32 @@ func (h *ReactionRoleHandler) handleAddRole(
 	rawEmoji := strings.TrimSpace(optMap["emoji"].StringValue())
 
 	var roleID string
-	if rOpt, ok := optMap["role"]; ok {
-		if r := rOpt.RoleValue(s, i.GuildID); r != nil {
-			roleID = r.ID
-		} else {
-			roleID = rOpt.StringValue()
+	var explicitRoleIDProvided bool
+	if rIDOpt, ok := optMap["role_id"]; ok {
+		if trimmed := strings.TrimSpace(rIDOpt.StringValue()); trimmed != "" {
+			roleID = strings.TrimSuffix(strings.TrimPrefix(trimmed, "<@&"), ">")
+			explicitRoleIDProvided = true
+		}
+	}
+	if roleID == "" {
+		if rOpt, ok := optMap["role"]; ok {
+			if r := rOpt.RoleValue(s, i.GuildID); r != nil {
+				roleID = r.ID
+			} else {
+				roleID = rOpt.StringValue()
+			}
 		}
 	}
 	if roleID == "" {
 		respondEphemeral(s, i, "❌ Could not resolve target role.")
 		return
+	}
+
+	// If the role was selected via Discord's standard @Role picker (which resolves duplicate role names
+	// to the first role with that name in the guild), automatically disambiguate if that role is already
+	// bound on another panel while a second role with the same name is unbound.
+	if !explicitRoleIDProvided {
+		roleID = h.disambiguateDuplicateNamedRole(ctx, s, i.GuildID, messageID, roleID)
 	}
 
 	label := ""
@@ -344,6 +374,85 @@ func (h *ReactionRoleHandler) HandleReactionAdd(s *discordgo.Session, r *discord
 		"user_id", r.UserID,
 		"emoji", emojiKey,
 	)
+
+	// If the user just reacted and claimed the normal "Ask To DM" role, "DM's Open" role,
+	// or "DM's Closed" role, automatically remove the initial join "Ask To DM" role.
+	h.removeJoinAskToDMRoleIfNeeded(s, r.GuildID, r.UserID, roleID)
+}
+
+// removeJoinAskToDMRoleIfNeeded checks if the granted role is one of the DM preference roles
+// ("Ask To DM", "DM's Open", or "DM's Closed") by configured ID or role name, and removes
+// the initial join "Ask To DM" role from the member.
+func (h *ReactionRoleHandler) removeJoinAskToDMRoleIfNeeded(s *discordgo.Session, guildID, userID, grantedRoleID string) {
+	if s == nil || guildID == "" || userID == "" || grantedRoleID == "" {
+		return
+	}
+
+	isDMPreferenceClaim := false
+	if grantedRoleID == h.askToDMRoleID || grantedRoleID == h.dmsOpenRoleID || grantedRoleID == h.dmsClosedRoleID {
+		if grantedRoleID != "" {
+			isDMPreferenceClaim = true
+		}
+	}
+
+	roles, _ := s.GuildRoles(guildID)
+	var askToDMRoleIDsInGuild []string
+	for _, gr := range roles {
+		if gr == nil {
+			continue
+		}
+		if gr.ID == grantedRoleID && IsDMPreferenceRoleName(gr.Name) {
+			isDMPreferenceClaim = true
+		}
+		if NormalizeDMRoleName(gr.Name) == "ask to dm" {
+			askToDMRoleIDsInGuild = append(askToDMRoleIDsInGuild, gr.ID)
+		}
+	}
+
+	if !isDMPreferenceClaim {
+		return
+	}
+
+	var rolesToRemove []string
+	seen := make(map[string]struct{})
+	addTarget := func(id string) {
+		if id == "" || id == grantedRoleID {
+			return
+		}
+		if _, exists := seen[id]; !exists {
+			seen[id] = struct{}{}
+			rolesToRemove = append(rolesToRemove, id)
+		}
+	}
+
+	if h.joinAskToDMRoleID != "" {
+		addTarget(h.joinAskToDMRoleID)
+	} else {
+		for _, rID := range askToDMRoleIDsInGuild {
+			if rID != h.askToDMRoleID {
+				addTarget(rID)
+			}
+		}
+	}
+
+	for _, removeRoleID := range rolesToRemove {
+		if err := s.GuildMemberRoleRemove(guildID, userID, removeRoleID); err != nil {
+			h.logger.Debug("reaction role: attempted removal of initial Ask To DM role",
+				"guild_id", guildID,
+				"user_id", userID,
+				"removed_role_id", removeRoleID,
+				"granted_role_id", grantedRoleID,
+				"error", err,
+			)
+		} else {
+			h.logger.Info("reaction role: removed initial Ask To DM role after member claimed DM preference role",
+				"guild_id", guildID,
+				"user_id", userID,
+				"removed_role_id", removeRoleID,
+				"granted_role_id", grantedRoleID,
+			)
+		}
+	}
 }
 
 // HandleReactionRemove revokes the mapped role when a user removes their reaction.
@@ -699,6 +808,13 @@ func ReactionRoleCommandDefinition() *discordgo.ApplicationCommand {
 						Description: "Require 18+ verification to claim this role? (Default: True)",
 						Required:    false,
 					},
+					{
+						Type:         discordgo.ApplicationCommandOptionString,
+						Name:         "role_id",
+						Description:  "Optional: Exact Role ID or select by #HexColor (disambiguates roles with identical names)",
+						Required:     false,
+						Autocomplete: true,
+					},
 				},
 			},
 			{
@@ -734,8 +850,25 @@ func ReactionRoleCommandDefinition() *discordgo.ApplicationCommand {
 	}
 }
 
-// HandleAutocomplete dynamically lists image files from the EC2 instance as the Staff member types.
+// HandleAutocomplete dynamically lists EC2 image files or server roles (with #HexColor and ID) as the Staff member types.
 func (h *ReactionRoleHandler) HandleAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Find which option the user is currently typing into
+	var focusedOptName string
+	var focusedVal string
+	for _, sub := range i.ApplicationCommandData().Options {
+		for _, opt := range sub.Options {
+			if opt.Focused {
+				focusedOptName = opt.Name
+				focusedVal = strings.ToLower(strings.TrimSpace(opt.StringValue()))
+			}
+		}
+	}
+
+	if focusedOptName == "role_id" {
+		h.handleRoleIDAutocomplete(s, i, focusedVal)
+		return
+	}
+
 	files, err := h.svc.ListEC2ImageFiles()
 	if err != nil {
 		h.logger.Error("failed to list EC2 images for autocomplete", "error", err)
@@ -746,16 +879,6 @@ func (h *ReactionRoleHandler) HandleAutocomplete(s *discordgo.Session, i *discor
 			},
 		})
 		return
-	}
-
-	// Find which option the user is currently typing into
-	var focusedVal string
-	for _, sub := range i.ApplicationCommandData().Options {
-		for _, opt := range sub.Options {
-			if opt.Focused {
-				focusedVal = strings.ToLower(strings.TrimSpace(opt.StringValue()))
-			}
-		}
 	}
 
 	var choices []*discordgo.ApplicationCommandOptionChoice
@@ -781,6 +904,172 @@ func (h *ReactionRoleHandler) HandleAutocomplete(s *discordgo.Session, i *discor
 			Choices: choices,
 		},
 	})
+}
+
+func (h *ReactionRoleHandler) handleRoleIDAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate, focusedVal string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	roles := h.fetchGuildRoles(s, i.GuildID)
+	boundSet := make(map[string]bool)
+	if h.svc != nil {
+		if bindings, err := h.svc.ListGuildBindings(ctx, i.GuildID); err == nil {
+			for _, b := range bindings {
+				boundSet[b.RoleID] = true
+			}
+		}
+	}
+
+	var choices []*discordgo.ApplicationCommandOptionChoice
+	for _, r := range roles {
+		if r == nil || r.ID == i.GuildID || r.Managed {
+			continue
+		}
+		colorHex := fmt.Sprintf("#%06X", r.Color)
+		statusTag := "Unbound"
+		if boundSet[r.ID] {
+			statusTag = "Bound on Panel"
+		}
+		label := fmt.Sprintf("@%s (%s • ID: %s) [%s]", r.Name, colorHex, r.ID, statusTag)
+		if len(label) > 100 {
+			label = label[:100]
+		}
+		searchTarget := strings.ToLower(label)
+		if focusedVal == "" || strings.Contains(searchTarget, focusedVal) {
+			choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+				Name:  label,
+				Value: r.ID,
+			})
+		}
+		if len(choices) >= 25 {
+			break
+		}
+	}
+
+	if choices == nil {
+		choices = []*discordgo.ApplicationCommandOptionChoice{}
+	}
+
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+		Data: &discordgo.InteractionResponseData{
+			Choices: choices,
+		},
+	})
+}
+
+func (h *ReactionRoleHandler) fetchGuildRoles(s *discordgo.Session, guildID string) []*discordgo.Role {
+	if s == nil || guildID == "" {
+		return nil
+	}
+	if roles, err := s.GuildRoles(guildID); err == nil && len(roles) > 0 {
+		return roles
+	}
+	if s.State != nil {
+		if g, err := s.State.Guild(guildID); err == nil && g != nil && len(g.Roles) > 0 {
+			return g.Roles
+		}
+	}
+	return nil
+}
+
+// disambiguateDuplicateNamedRole resolves a Discord slash-command role selection when two or more
+// server roles share the exact same name. Because Discord's client resolves duplicate role names in
+// slash-command inputs to the first matching role, if that role is already bound on another panel
+// while a sibling role with the same name is unbound, this selects the unbound sibling role.
+func (h *ReactionRoleHandler) disambiguateDuplicateNamedRole(
+	ctx context.Context,
+	s *discordgo.Session,
+	guildID, targetMessageID, selectedRoleID string,
+) string {
+	if h.svc == nil || guildID == "" || selectedRoleID == "" {
+		return selectedRoleID
+	}
+
+	roles := h.fetchGuildRoles(s, guildID)
+	if len(roles) <= 1 {
+		return selectedRoleID
+	}
+
+	existingBindings, err := h.svc.ListGuildBindings(ctx, guildID)
+	if err != nil || len(existingBindings) == 0 {
+		return selectedRoleID
+	}
+
+	resolvedID, changed := DisambiguateDuplicateNamedRole(roles, existingBindings, targetMessageID, selectedRoleID)
+	if changed {
+		h.logger.Info("reaction role: disambiguated duplicate-named role already bound on another panel",
+			"guild_id", guildID,
+			"panel_message_id", targetMessageID,
+			"defaulted_role_id", selectedRoleID,
+			"resolved_role_id", resolvedID,
+		)
+	}
+	return resolvedID
+}
+
+// DisambiguateDuplicateNamedRole checks whether selectedRoleID shares its name with one or more other
+// roles in guildRoles. If selectedRoleID is already bound on an existing reaction panel and a sibling
+// role with the same name is unbound (or not bound on targetMessageID), it returns the sibling's Role ID.
+func DisambiguateDuplicateNamedRole(
+	guildRoles []*discordgo.Role,
+	existingBindings []*domain.ReactionRole,
+	targetMessageID, selectedRoleID string,
+) (string, bool) {
+	var selectedRole *discordgo.Role
+	for _, r := range guildRoles {
+		if r != nil && r.ID == selectedRoleID {
+			selectedRole = r
+			break
+		}
+	}
+	if selectedRole == nil {
+		return selectedRoleID, false
+	}
+
+	targetName := strings.TrimSpace(selectedRole.Name)
+	var sameNameRoles []*discordgo.Role
+	for _, r := range guildRoles {
+		if r != nil && strings.EqualFold(strings.TrimSpace(r.Name), targetName) {
+			sameNameRoles = append(sameNameRoles, r)
+		}
+	}
+	if len(sameNameRoles) <= 1 {
+		return selectedRoleID, false
+	}
+
+	boundAnywhere := make(map[string]bool, len(existingBindings))
+	boundOnTargetPanel := make(map[string]bool)
+	for _, b := range existingBindings {
+		if b == nil {
+			continue
+		}
+		boundAnywhere[b.RoleID] = true
+		if b.MessageID == targetMessageID {
+			boundOnTargetPanel[b.RoleID] = true
+		}
+	}
+
+	// Only disambiguate if the role Discord defaulted to is already bound on a panel
+	if !boundAnywhere[selectedRoleID] {
+		return selectedRoleID, false
+	}
+
+	// Priority 1: Pick a sibling role with the same name that is not bound on any panel yet
+	for _, cand := range sameNameRoles {
+		if cand.ID != selectedRoleID && !boundAnywhere[cand.ID] {
+			return cand.ID, true
+		}
+	}
+
+	// Priority 2: Pick a sibling role with the same name that is not bound on the current target panel
+	for _, cand := range sameNameRoles {
+		if cand.ID != selectedRoleID && !boundOnTargetPanel[cand.ID] {
+			return cand.ID, true
+		}
+	}
+
+	return selectedRoleID, false
 }
 
 // handleCreatePanel reads the local EC2 image files and uploads them inside the Discord Embed via attachment://.
