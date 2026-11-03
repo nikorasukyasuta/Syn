@@ -556,6 +556,10 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 			}
 		}
 
+		if b.versionHandler != nil && b.versionHandler.HandleComponentInteraction(s, i) {
+			break
+		}
+
 		if b.spoilerTTLHandler != nil && b.spoilerTTLHandler.HandleComponentInteraction(s, i) {
 			break
 		}
