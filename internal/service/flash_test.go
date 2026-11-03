@@ -92,6 +92,14 @@ func TestFlashDashService_ConfigureAndQuery(t *testing.T) {
 		t.Fatal("expected error for duration under 10s")
 	}
 
+	// 1b. Default duration (0) defaults to 30 minutes (domain.DefaultFlashDashDuration)
+	if err := svc.ConfigureChannel(ctx, "guild_1", "chan_default_30m", 0); err != nil {
+		t.Fatalf("unexpected error configuring default channel: %v", err)
+	}
+	if defDur, ok := svc.GetChannelDuration("chan_default_30m"); !ok || defDur != 30*time.Minute {
+		t.Fatalf("expected default Flash & Dash timer to be 30m, got %v (ok=%v)", defDur, ok)
+	}
+
 	// 2. Configure valid channel
 	if err := svc.ConfigureChannel(ctx, "guild_1", "chan_1", 30*time.Second); err != nil {
 		t.Fatalf("unexpected error configuring channel: %v", err)

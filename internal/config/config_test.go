@@ -347,6 +347,14 @@ func TestConfig_Load_WebCustomSettings(t *testing.T) {
 	if cfg.WebBaseURL != "https://syn.example.com" {
 		t.Errorf("expected WebBaseURL 'https://syn.example.com', got %s", cfg.WebBaseURL)
 	}
+
+	// Verify NormalizeWebBaseURL handles bare Namecheap domains, localhost, and trailing slashes
+	if got := config.NormalizeWebBaseURL("mynamecheapdomain.com/", "8080"); got != "https://mynamecheapdomain.com" {
+		t.Errorf("expected https://mynamecheapdomain.com, got %s", got)
+	}
+	if got := config.NormalizeWebBaseURL("localhost:8080/", "8080"); got != "http://localhost:8080" {
+		t.Errorf("expected http://localhost:8080, got %s", got)
+	}
 }
 
 func TestConfig_EnvironmentAndEC2Guard(t *testing.T) {

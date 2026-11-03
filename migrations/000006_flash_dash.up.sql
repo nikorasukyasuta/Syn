@@ -3,7 +3,7 @@
 CREATE TABLE IF NOT EXISTS flash_dash_channels (
     guild_id     VARCHAR(32) NOT NULL,
     channel_id   VARCHAR(32) NOT NULL PRIMARY KEY,
-    duration_sec INT NOT NULL DEFAULT 300, -- default 5 minutes
+    duration_sec INT NOT NULL DEFAULT 1800, -- default 30 minutes
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

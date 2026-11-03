@@ -17,7 +17,13 @@ type Config struct {
 	VerifiedRoleID           string   // Role ID granted upon standard member verification (/verify-member)
 	IDVerifiedRoleID         string   // Role ID granted upon 18+ photo ID verification (/id-verify)
 	UnverifiedRoleID         string   // Role ID assigned automatically to unverified members on join
-	StaffRoleIDs             []string // Holds both Staff and Server Helper Role IDs
+	JoinAskToDMRoleID        string   // Role ID ("Ask To DM") assigned automatically to members on join alongside Unverified
+	AskToDMRoleID            string   // Normal "Ask To DM" Role ID on the reaction role panel (removes JoinAskToDMRoleID when claimed)
+	DMsOpenRoleID            string   // "DM's Open" Role ID on the reaction role panel (removes JoinAskToDMRoleID when claimed)
+	DMsClosedRoleID          string   // "DM's Closed" Role ID on the reaction role panel (removes JoinAskToDMRoleID when claimed)
+	StaffRoleIDs             []string // Server Staff Role IDs (the ONLY roles able to view all general tickets & run full staff commands)
+	ServerHelperRoleIDs      []string // Server Helper Role IDs (able to view/review 18+ ID verification tickets, NOT general tickets)
+	IDCheckerRoleIDs         []string // ID Checker Role IDs (dedicated 18+ ID verification reviewers, NOT general tickets)
 	StaffAlertChannelID      string   // Optional: Channel to send staff notifications/safeword alerts
 	SafewordEmoji            string   // Optional: Reaction emoji that triggers RED (defaults to "🛑")
 	DatabaseURL              string   // Full PostgreSQL connection string
@@ -50,6 +56,88 @@ func (c *Config) IsProduction() bool {
 	return NormalizeEnvironment(c.Environment) == EnvironmentProduction
 }
 
+// TicketStaffRoleIDs returns strictly the Server Staff role IDs (excluding any role ID
+// designated as a Server Helper or ID Checker) so ONLY Server Staff can see all general tickets.
+func (c *Config) TicketStaffRoleIDs() []string {
+	if c == nil {
+		return nil
+	}
+	excluded := make(map[string]struct{}, len(c.ServerHelperRoleIDs)+len(c.IDCheckerRoleIDs))
+	for _, id := range c.ServerHelperRoleIDs {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			excluded[trimmed] = struct{}{}
+		}
+	}
+	for _, id := range c.IDCheckerRoleIDs {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			excluded[trimmed] = struct{}{}
+		}
+	}
+
+	var result []string
+	seen := make(map[string]struct{}, len(c.StaffRoleIDs))
+	for _, id := range c.StaffRoleIDs {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			continue
+		}
+		if _, isExcluded := excluded[trimmed]; isExcluded {
+			continue
+		}
+		if _, dup := seen[trimmed]; !dup {
+			seen[trimmed] = struct{}{}
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+// NonTicketHelperAndCheckerRoleIDs returns the deduplicated list of Server Helper and ID Checker
+// role IDs so general support/report/bug/account-issue tickets can explicitly deny ViewChannel to them.
+func (c *Config) NonTicketHelperAndCheckerRoleIDs() []string {
+	if c == nil {
+		return nil
+	}
+	var result []string
+	seen := make(map[string]struct{})
+	for _, list := range [][]string{c.ServerHelperRoleIDs, c.IDCheckerRoleIDs} {
+		for _, id := range list {
+			trimmed := strings.TrimSpace(id)
+			if trimmed == "" {
+				continue
+			}
+			if _, dup := seen[trimmed]; !dup {
+				seen[trimmed] = struct{}{}
+				result = append(result, trimmed)
+			}
+		}
+	}
+	return result
+}
+
+// IDVerifyReviewerRoleIDs returns the deduplicated union of Server Staff, Server Helpers, and ID Checkers,
+// all of whom are authorized to view and process 18+ ID Verification tickets.
+func (c *Config) IDVerifyReviewerRoleIDs() []string {
+	if c == nil {
+		return nil
+	}
+	var result []string
+	seen := make(map[string]struct{})
+	for _, list := range [][]string{c.StaffRoleIDs, c.ServerHelperRoleIDs, c.IDCheckerRoleIDs} {
+		for _, id := range list {
+			trimmed := strings.TrimSpace(id)
+			if trimmed == "" {
+				continue
+			}
+			if _, dup := seen[trimmed]; !dup {
+				seen[trimmed] = struct{}{}
+				result = append(result, trimmed)
+			}
+		}
+	}
+	return result
+}
+
 // DiscordIDs represents Discord snowflake identifiers and non-secret runtime settings
 // loaded from a dedicated JSON configuration file (e.g., config/discord_ids.json).
 type DiscordIDs struct {
@@ -58,17 +146,34 @@ type DiscordIDs struct {
 	VerifiedRoleID      string   `json:"verified_role_id"`
 	IDVerifiedRoleID    string   `json:"id_verified_role_id"`
 	UnverifiedRoleID    string   `json:"unverified_role_id"`
+	JoinAskToDMRoleID   string   `json:"join_ask_to_dm_role_id,omitempty"`
+	AskToDMRoleID       string   `json:"ask_to_dm_role_id,omitempty"`
+	DMsOpenRoleID       string   `json:"dms_open_role_id,omitempty"`
+	DMsClosedRoleID     string   `json:"dms_closed_role_id,omitempty"`
 	StaffRoleIDs        []string `json:"staff_role_ids"`
+	ServerHelperRoleIDs []string `json:"server_helper_role_ids,omitempty"`
+	IDCheckerRoleIDs    []string `json:"id_checker_role_ids,omitempty"`
+	IDReviewerRoleIDs   []string `json:"id_reviewer_role_ids,omitempty"`
 	TicketCategoryID    string   `json:"ticket_category_id"`
 	TicketLogChannelID  string   `json:"ticket_log_channel_id"`
 	StaffAlertChannelID string   `json:"staff_alert_channel_id"`
+	WebBaseURL          string   `json:"web_base_url,omitempty"`
 
 	// Supports nested structure: "roles": { ... }, "channels": { ... }, "settings": { ... }
 	Roles struct {
-		VerifiedRoleID   string   `json:"verified_role_id"`
-		IDVerifiedRoleID string   `json:"id_verified_role_id"`
-		UnverifiedRoleID string   `json:"unverified_role_id"`
-		StaffRoleIDs     []string `json:"staff_role_ids"`
+		VerifiedRoleID      string   `json:"verified_role_id"`
+		IDVerifiedRoleID    string   `json:"id_verified_role_id"`
+		UnverifiedRoleID    string   `json:"unverified_role_id"`
+		JoinAskToDMRoleID   string   `json:"join_ask_to_dm_role_id,omitempty"`
+		AskToDMRoleID       string   `json:"ask_to_dm_role_id,omitempty"`
+		DMsOpenRoleID       string   `json:"dms_open_role_id,omitempty"`
+		DMsClosedRoleID     string   `json:"dms_closed_role_id,omitempty"`
+		StaffRoleIDs        []string `json:"staff_role_ids"`
+		ServerStaffRoleIDs  []string `json:"server_staff_role_ids,omitempty"`
+		ServerHelperRoleIDs []string `json:"server_helper_role_ids,omitempty"`
+		HelperRoleIDs       []string `json:"helper_role_ids,omitempty"`
+		IDCheckerRoleIDs    []string `json:"id_checker_role_ids,omitempty"`
+		IDReviewerRoleIDs   []string `json:"id_reviewer_role_ids,omitempty"`
 	} `json:"roles"`
 
 	Channels struct {
@@ -86,6 +191,7 @@ type DiscordIDs struct {
 		MetricsSampleIntervalSec int    `json:"metrics_sample_interval_sec"`
 		MetricsFlushIntervalSec  int    `json:"metrics_flush_interval_sec"`
 		WebPort                  string `json:"web_port"`
+		WebBaseURL               string `json:"web_base_url,omitempty"`
 		ServerTemplatePath       string `json:"server_template_path,omitempty"`
 	} `json:"settings"`
 }
@@ -114,8 +220,39 @@ func LoadDiscordIDsFile(filePath string) (*DiscordIDs, error) {
 	if ids.UnverifiedRoleID == "" && ids.Roles.UnverifiedRoleID != "" {
 		ids.UnverifiedRoleID = ids.Roles.UnverifiedRoleID
 	}
-	if len(ids.StaffRoleIDs) == 0 && len(ids.Roles.StaffRoleIDs) > 0 {
-		ids.StaffRoleIDs = ids.Roles.StaffRoleIDs
+	if ids.JoinAskToDMRoleID == "" && ids.Roles.JoinAskToDMRoleID != "" {
+		ids.JoinAskToDMRoleID = ids.Roles.JoinAskToDMRoleID
+	}
+	if ids.AskToDMRoleID == "" && ids.Roles.AskToDMRoleID != "" {
+		ids.AskToDMRoleID = ids.Roles.AskToDMRoleID
+	}
+	if ids.DMsOpenRoleID == "" && ids.Roles.DMsOpenRoleID != "" {
+		ids.DMsOpenRoleID = ids.Roles.DMsOpenRoleID
+	}
+	if ids.DMsClosedRoleID == "" && ids.Roles.DMsClosedRoleID != "" {
+		ids.DMsClosedRoleID = ids.Roles.DMsClosedRoleID
+	}
+	if len(ids.StaffRoleIDs) == 0 {
+		if len(ids.Roles.ServerStaffRoleIDs) > 0 {
+			ids.StaffRoleIDs = ids.Roles.ServerStaffRoleIDs
+		} else if len(ids.Roles.StaffRoleIDs) > 0 {
+			ids.StaffRoleIDs = ids.Roles.StaffRoleIDs
+		}
+	}
+	if len(ids.ServerHelperRoleIDs) == 0 {
+		if len(ids.Roles.ServerHelperRoleIDs) > 0 {
+			ids.ServerHelperRoleIDs = ids.Roles.ServerHelperRoleIDs
+		} else if len(ids.Roles.HelperRoleIDs) > 0 {
+			ids.ServerHelperRoleIDs = ids.Roles.HelperRoleIDs
+		}
+	}
+	if len(ids.IDCheckerRoleIDs) == 0 && len(ids.Roles.IDCheckerRoleIDs) > 0 {
+		ids.IDCheckerRoleIDs = ids.Roles.IDCheckerRoleIDs
+	}
+	for _, revID := range append(ids.IDReviewerRoleIDs, ids.Roles.IDReviewerRoleIDs...) {
+		if trimmed := strings.TrimSpace(revID); trimmed != "" {
+			ids.IDCheckerRoleIDs = append(ids.IDCheckerRoleIDs, trimmed)
+		}
 	}
 	if ids.TicketCategoryID == "" && ids.Channels.TicketCategoryID != "" {
 		ids.TicketCategoryID = ids.Channels.TicketCategoryID
@@ -126,8 +263,32 @@ func LoadDiscordIDsFile(filePath string) (*DiscordIDs, error) {
 	if ids.StaffAlertChannelID == "" && ids.Channels.StaffAlertChannelID != "" {
 		ids.StaffAlertChannelID = ids.Channels.StaffAlertChannelID
 	}
+	if ids.WebBaseURL == "" && ids.Settings.WebBaseURL != "" {
+		ids.WebBaseURL = ids.Settings.WebBaseURL
+	}
 
 	return &ids, nil
+}
+
+// NormalizeWebBaseURL guarantees a well-formed HTTP/HTTPS base URL without trailing slashes
+// so Discord LinkButtons (/terms, /privacy) never fail validation if a bare domain is supplied.
+func NormalizeWebBaseURL(raw string, defaultPort string) string {
+	trimmed := strings.TrimSpace(raw)
+	if defaultPort == "" {
+		defaultPort = "8080"
+	}
+	if trimmed == "" {
+		return fmt.Sprintf("http://localhost:%s", defaultPort)
+	}
+	trimmed = strings.TrimRight(trimmed, "/")
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return trimmed
+	}
+	if strings.HasPrefix(lower, "localhost") || strings.HasPrefix(lower, "127.0.0.1") {
+		return "http://" + trimmed
+	}
+	return "https://" + trimmed
 }
 
 // Load parses configuration from external JSON files and environment variables.
@@ -177,7 +338,13 @@ func Load() (*Config, error) {
 	verifiedRoleID := ""
 	idVerifiedRoleID := ""
 	unverifiedRoleID := ""
+	joinAskToDMRoleID := ""
+	askToDMRoleID := ""
+	dmsOpenRoleID := ""
+	dmsClosedRoleID := ""
 	var staffRoles []string
+	var serverHelperRoles []string
+	var idCheckerRoles []string
 	ticketCat := ""
 	ticketLog := ""
 	staffAlertChan := ""
@@ -187,7 +354,13 @@ func Load() (*Config, error) {
 		verifiedRoleID = fileIDs.VerifiedRoleID
 		idVerifiedRoleID = fileIDs.IDVerifiedRoleID
 		unverifiedRoleID = fileIDs.UnverifiedRoleID
+		joinAskToDMRoleID = fileIDs.JoinAskToDMRoleID
+		askToDMRoleID = fileIDs.AskToDMRoleID
+		dmsOpenRoleID = fileIDs.DMsOpenRoleID
+		dmsClosedRoleID = fileIDs.DMsClosedRoleID
 		staffRoles = fileIDs.StaffRoleIDs
+		serverHelperRoles = fileIDs.ServerHelperRoleIDs
+		idCheckerRoles = fileIDs.IDCheckerRoleIDs
 		ticketCat = fileIDs.TicketCategoryID
 		ticketLog = fileIDs.TicketLogChannelID
 		staffAlertChan = fileIDs.StaffAlertChannelID
@@ -209,11 +382,54 @@ func Load() (*Config, error) {
 	if unverifiedRoleID == "" {
 		unverifiedRoleID = os.Getenv("DISCORD_UNVERIFIED_ROLE_ID")
 	}
+	if joinAskToDMRoleID == "" {
+		joinAskToDMRoleID = strings.TrimSpace(os.Getenv("DISCORD_JOIN_ASK_TO_DM_ROLE_ID"))
+	}
+	if askToDMRoleID == "" {
+		askToDMRoleID = strings.TrimSpace(os.Getenv("DISCORD_ASK_TO_DM_ROLE_ID"))
+	}
+	if dmsOpenRoleID == "" {
+		dmsOpenRoleID = strings.TrimSpace(os.Getenv("DISCORD_DMS_OPEN_ROLE_ID"))
+	}
+	if dmsClosedRoleID == "" {
+		dmsClosedRoleID = strings.TrimSpace(os.Getenv("DISCORD_DMS_CLOSED_ROLE_ID"))
+	}
 	if len(staffRoles) == 0 {
-		rawRoles := os.Getenv("ALLOWED_VERIFIER_ROLE_IDS")
+		rawRoles := os.Getenv("DISCORD_STAFF_ROLE_IDS")
+		if rawRoles == "" {
+			rawRoles = os.Getenv("ALLOWED_VERIFIER_ROLE_IDS")
+		}
 		for _, r := range strings.Split(rawRoles, ",") {
 			if trimmed := strings.TrimSpace(r); trimmed != "" {
 				staffRoles = append(staffRoles, trimmed)
+			}
+		}
+	}
+	if len(serverHelperRoles) == 0 {
+		rawHelpers := os.Getenv("DISCORD_SERVER_HELPER_ROLE_IDS")
+		if rawHelpers == "" {
+			rawHelpers = os.Getenv("SERVER_HELPER_ROLE_IDS")
+		}
+		for _, r := range strings.Split(rawHelpers, ",") {
+			if trimmed := strings.TrimSpace(r); trimmed != "" {
+				serverHelperRoles = append(serverHelperRoles, trimmed)
+			}
+		}
+	}
+	if len(idCheckerRoles) == 0 {
+		rawCheckers := os.Getenv("DISCORD_ID_CHECKER_ROLE_IDS")
+		if rawCheckers == "" {
+			rawCheckers = os.Getenv("ID_CHECKER_ROLE_IDS")
+		}
+		if rawCheckers == "" {
+			rawCheckers = os.Getenv("DISCORD_ID_REVIEWER_ROLE_IDS")
+		}
+		if rawCheckers == "" {
+			rawCheckers = os.Getenv("ID_REVIEWER_ROLE_IDS")
+		}
+		for _, r := range strings.Split(rawCheckers, ",") {
+			if trimmed := strings.TrimSpace(r); trimmed != "" {
+				idCheckerRoles = append(idCheckerRoles, trimmed)
 			}
 		}
 	}
@@ -319,11 +535,11 @@ func Load() (*Config, error) {
 		webPort = "8080"
 	}
 
-	webBaseURL := os.Getenv("WEB_BASE_URL")
-	if webBaseURL == "" {
-		webBaseURL = fmt.Sprintf("http://localhost:%s", webPort)
+	webBaseURL := strings.TrimSpace(os.Getenv("WEB_BASE_URL"))
+	if webBaseURL == "" && fileIDs != nil && fileIDs.WebBaseURL != "" {
+		webBaseURL = strings.TrimSpace(fileIDs.WebBaseURL)
 	}
-	webBaseURL = strings.TrimRight(webBaseURL, "/")
+	webBaseURL = NormalizeWebBaseURL(webBaseURL, webPort)
 
 	serverTemplatePath := strings.TrimSpace(os.Getenv("SERVER_TEMPLATE_PATH"))
 	if serverTemplatePath == "" && fileIDs != nil && fileIDs.Settings.ServerTemplatePath != "" {
@@ -340,7 +556,13 @@ func Load() (*Config, error) {
 		VerifiedRoleID:           verifiedRoleID,
 		IDVerifiedRoleID:         idVerifiedRoleID,
 		UnverifiedRoleID:         unverifiedRoleID,
+		JoinAskToDMRoleID:        joinAskToDMRoleID,
+		AskToDMRoleID:            askToDMRoleID,
+		DMsOpenRoleID:            dmsOpenRoleID,
+		DMsClosedRoleID:          dmsClosedRoleID,
 		StaffRoleIDs:             staffRoles,
+		ServerHelperRoleIDs:      serverHelperRoles,
+		IDCheckerRoleIDs:         idCheckerRoles,
 		StaffAlertChannelID:      staffAlertChan,
 		SafewordEmoji:            safewordEmoji,
 		DatabaseURL:              dbURL,

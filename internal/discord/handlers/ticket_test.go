@@ -204,6 +204,42 @@ func TestTicketHandler_BuildChannelOverwrites(t *testing.T) {
 	}
 }
 
+func TestTicketHandler_BuildChannelOverwrites_DelineatesHelpersAndCheckers(t *testing.T) {
+	t.Parallel()
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	cfg := &config.Config{
+		StaffRoleIDs:        []string{"role_server_staff"},
+		ServerHelperRoleIDs: []string{"role_server_helper"},
+		IDCheckerRoleIDs:    []string{"role_id_checker"},
+	}
+	svc := service.NewTicketService(nil, cfg.TicketStaffRoleIDs(), silentLogger)
+	handler := NewTicketHandler(svc, cfg, nil, silentLogger)
+
+	overwrites := handler.buildChannelOverwrites("guild_100", "creator_200", "bot_300")
+
+	allowView := make(map[string]bool)
+	denyView := make(map[string]bool)
+	for _, ow := range overwrites {
+		if ow.Allow&discordgo.PermissionViewChannel != 0 {
+			allowView[ow.ID] = true
+		}
+		if ow.Deny&discordgo.PermissionViewChannel != 0 {
+			denyView[ow.ID] = true
+		}
+	}
+
+	if !allowView["role_server_staff"] {
+		t.Fatal("expected Server Staff role to be allowed ViewChannel on general tickets")
+	}
+	if !denyView["role_server_helper"] {
+		t.Fatal("expected Server Helper role to be explicitly denied ViewChannel on general tickets")
+	}
+	if !denyView["role_id_checker"] {
+		t.Fatal("expected ID Checker role to be explicitly denied ViewChannel on general tickets")
+	}
+}
+
 func TestTicketHandler_BuildTicketHubOverwrites(t *testing.T) {
 	t.Parallel()
 

@@ -78,7 +78,13 @@ type BotRoleTemplateMapping struct {
 	VerifiedRoleOriginalID      string   `json:"verified_role_original_id"`
 	IDVerifiedRoleOriginalID    string   `json:"id_verified_role_original_id"`
 	UnverifiedRoleOriginalID    string   `json:"unverified_role_original_id"`
+	JoinAskToDMRoleOriginalID   string   `json:"join_ask_to_dm_role_original_id,omitempty"`
+	AskToDMRoleOriginalID       string   `json:"ask_to_dm_role_original_id,omitempty"`
+	DMsOpenRoleOriginalID       string   `json:"dms_open_role_original_id,omitempty"`
+	DMsClosedRoleOriginalID     string   `json:"dms_closed_role_original_id,omitempty"`
 	StaffRoleOriginalIDs        []string `json:"staff_role_original_ids"`
+	ServerHelperRoleOriginalIDs []string `json:"server_helper_role_original_ids,omitempty"`
+	IDCheckerRoleOriginalIDs    []string `json:"id_checker_role_original_ids,omitempty"`
 	TicketCategoryOriginalID    string   `json:"ticket_category_original_id,omitempty"`
 	TicketLogChannelOriginalID  string   `json:"ticket_log_channel_original_id,omitempty"`
 	StaffAlertChannelOriginalID string   `json:"staff_alert_channel_original_id,omitempty"`

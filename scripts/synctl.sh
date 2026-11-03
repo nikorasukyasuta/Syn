@@ -56,6 +56,9 @@ case "$SUBCMD" in
 	dbeaver)
 		exec "${SCRIPT_DIR}/db/open_db_for_dbeaver.sh" "$@"
 		;;
+	domain|ssl)
+		exec "${SCRIPT_DIR}/ops/setup_domain_ssl.sh" "$@"
+		;;
 	setup|check|audit|init-config|swap|systemd|cron)
 		if [[ "$SUBCMD" == "setup" ]]; then
 			exec "${SCRIPT_DIR}/ops/ec2_setup.sh" "$@"
@@ -96,7 +99,8 @@ Database & Backups (scripts/db/):
   db-summary                                Show row counts & sizes per table
   dbeaver [start|stop|status] [--ssh-only]  Manage remote DBeaver access
 
-EC2 Host Setup & Hardening (scripts/ops/):
+EC2 Host Setup, Domain & Hardening (scripts/ops/):
+  domain [guide|check|setup] <domain>       Configure Namecheap domain + Elastic IP + HTTPS
   check                                     Audit EC2 host, .env, Swap, & Docker
   init-config                               Scaffold .env and config files
   swap                                      Provision 2GB /swapfile (sudo)

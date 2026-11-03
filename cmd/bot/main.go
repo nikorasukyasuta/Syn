@@ -113,7 +113,7 @@ func main() {
 	}
 	cmdQueue := queue.NewCommandQueue(1024, workerCount, logger)
 
-	verifySvc := service.NewVerificationService(verifyRepo, auditRepo, cfg.StaffRoleIDs, logger)
+	verifySvc := service.NewVerificationService(verifyRepo, auditRepo, cfg.IDVerifyReviewerRoleIDs(), logger)
 	verifyHandler := handlers.NewVerifyHandler(verifySvc, cfg.VerifiedRoleID, cfg.UnverifiedRoleID, lockMgr, logger)
 
 	assetStore, err := storage.NewLocalAssetStore(cfg.AssetsDir)
@@ -123,28 +123,30 @@ func main() {
 	}
 
 	rrRepo := postgres.NewReactionRoleRepo(dbPool)
-	rrSvc := service.NewReactionRoleService(rrRepo, verifyRepo, auditRepo, assetStore, cfg.StaffRoleIDs, cfg.VerifiedRoleID, logger)
+	rrSvc := service.NewReactionRoleService(rrRepo, verifyRepo, auditRepo, assetStore, cfg.TicketStaffRoleIDs(), cfg.VerifiedRoleID, logger)
 	rrSvc.AddProtectedRoles(cfg.IDVerifiedRoleID, cfg.UnverifiedRoleID)
 	rrHandler := handlers.NewReactionRoleHandler(rrSvc, logger)
 	rrHandler.SetLockManager(lockMgr)
+	rrHandler.SetDMRoles(cfg.JoinAskToDMRoleID, cfg.AskToDMRoleID, cfg.DMsOpenRoleID, cfg.DMsClosedRoleID)
 
 	// Dynamic Resource Cache for roles and channels
 	resCache := cache.NewResourceCache(logger)
 
-	// Automatic Member Join Handler for granting unverified role
+	// Automatic Member Join Handler for granting unverified role and Join "Ask To DM" role
 	memberHandler := handlers.NewMemberJoinHandler(cfg.GuildID, cfg.UnverifiedRoleID, logger)
+	memberHandler.SetJoinAskToDMRole(cfg.JoinAskToDMRoleID)
 	memberHandler.SetLockManager(lockMgr)
 
 	// Safeword / RED Alert Handler
 	safewordHandler := handlers.NewSafewordHandler(cfg, auditRepo, logger)
 
-	// Support & Verification Ticket System
+	// Support & Verification Ticket System (strictly gated to Server Staff — excludes Server Helpers & ID Checkers)
 	ticketRepo := postgres.NewTicketRepo(dbPool)
-	ticketSvc := service.NewTicketService(ticketRepo, cfg.StaffRoleIDs, logger)
+	ticketSvc := service.NewTicketService(ticketRepo, cfg.TicketStaffRoleIDs(), logger)
 	ticketHandler := handlers.NewTicketHandler(ticketSvc, cfg, resCache, logger)
 
 	// Health and Infrastructure Diagnostics Handler (Public nominal, Staff deep diagnostics)
-	healthHandler := handlers.NewHealthHandler(cfg.StaffRoleIDs, dbPool, cmdQueue, lockMgr)
+	healthHandler := handlers.NewHealthHandler(cfg.TicketStaffRoleIDs(), dbPool, cmdQueue, lockMgr)
 
 	// System Resource Telemetry Cache & Periodic JSONL Metrics Flusher (for graphing & monitoring)
 	telemetryMonitor, err := telemetry.NewMonitor(
@@ -170,23 +172,28 @@ func main() {
 
 	// Automated Word Filter and Moderation Warnings
 	warningRepo := postgres.NewWarningRepo(dbPool)
-	filterSvc := service.NewWordFilterService(warningRepo, cfg.StaffRoleIDs, logger)
+	filterSvc := service.NewWordFilterService(warningRepo, cfg.TicketStaffRoleIDs(), logger)
 	if err := filterSvc.LoadAll(cfg.FiltersDir); err != nil {
 		logger.Warn("filter service initial load completed with warning", "error", err, "dir", cfg.FiltersDir)
 	}
 	filterHandler := handlers.NewFilterHandler(filterSvc, ticketSvc, cfg, resCache, logger)
 
-	// Flash and Dash Ephemeral Photo Channels
+	// Flash and Dash Ephemeral Photo Channels (30-minute default timer)
 	flashRepo := postgres.NewFlashRepo(dbPool)
-	flashSvc := service.NewFlashDashService(flashRepo, cfg.StaffRoleIDs, logger)
+	flashSvc := service.NewFlashDashService(flashRepo, cfg.TicketStaffRoleIDs(), logger)
 	flashHandler := handlers.NewFlashHandler(flashSvc, cfg, logger)
+
+	// User-Configured Spoilered Photo TTL Auto-Deletion (30m to 14d, available to all members)
+	spoilerTTLRepo := postgres.NewSpoilerTTLRepo(dbPool)
+	spoilerTTLSvc := service.NewSpoilerTTLService(spoilerTTLRepo, flashSvc, logger)
+	spoilerTTLHandler := handlers.NewSpoilerTTLHandler(spoilerTTLSvc, cfg, logger)
 
 	// Legal and Privacy Command Handlers
 	legalHandler := handlers.NewLegalHandler(cfg)
 
-	// Dedicated 18+ ID Verification Flow (Staff-Gated Commands + User Panel)
+	// Dedicated 18+ ID Verification Flow (accessible to Server Staff, Server Helpers & ID Checkers)
 	idVerifyRepo := postgres.NewIDVerificationRepo(dbPool)
-	idVerifySvc := service.NewIDVerificationService(idVerifyRepo, verifyRepo, auditRepo, cfg.StaffRoleIDs, logger)
+	idVerifySvc := service.NewIDVerificationService(idVerifyRepo, verifyRepo, auditRepo, cfg.IDVerifyReviewerRoleIDs(), logger)
 	idVerifyHandler := handlers.NewIDVerifyHandler(idVerifySvc, cfg, resCache, lockMgr, logger)
 
 	// Administrator-Only Server Template Export & Development Server Apply Suite
@@ -227,6 +234,7 @@ func main() {
 	}
 	bot.SetIDVerifyHandler(idVerifyHandler)
 	bot.SetTemplateHandler(templateHandler)
+	bot.SetSpoilerTTLHandler(spoilerTTLHandler)
 
 	// 5. Start the Bot
 	if err := bot.Start(); err != nil {
@@ -237,6 +245,11 @@ func main() {
 	// Initialize Flash and Dash service (warm load channels and resume pending deletion timers)
 	if err := flashSvc.Init(ctx, bot.Session(), cfg.GuildID); err != nil {
 		logger.Warn("failed to initialize flash and dash service", "error", err)
+	}
+
+	// Initialize Spoilered Photo TTL service (warm load user TTLs and resume pending deletion timers)
+	if err := spoilerTTLSvc.Init(ctx, bot.Session(), cfg.GuildID); err != nil {
+		logger.Warn("failed to initialize spoiler ttl service", "error", err)
 	}
 
 	// Automatically provision or sync the read-only Ticket Creation Hub channel and its per-type posts.

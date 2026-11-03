@@ -111,8 +111,8 @@ func TestIDVerifyCommandDefinition(t *testing.T) {
 	if cmd.Name != "id-verify" {
 		t.Fatalf("expected command name 'id-verify', got %s", cmd.Name)
 	}
-	if cmd.DefaultMemberPermissions == nil || *cmd.DefaultMemberPermissions != 0 {
-		t.Fatal("expected DefaultMemberPermissions to be 0 (Staff-gated)")
+	if cmd.DefaultMemberPermissions != nil {
+		t.Fatal("expected DefaultMemberPermissions to be nil so ID Reviewers, Helpers, and Staff can invoke /id-verify without Administrator bit")
 	}
 	if cmd.DMPermission == nil || *cmd.DMPermission != false {
 		t.Fatal("expected DMPermission to be false")
@@ -158,11 +158,13 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 	idRepo := newMockIDVerifyRepoHandler()
 	vRepo := newMockVerifyRepoStateful()
 	cfg := &config.Config{
-		GuildID:          "guild_1",
-		VerifiedRoleID:   "role_verified",
-		IDVerifiedRoleID: "role_id_verified",
-		UnverifiedRoleID: "role_unverified",
-		StaffRoleIDs:     []string{"role_staff"},
+		GuildID:             "guild_1",
+		VerifiedRoleID:      "role_verified",
+		IDVerifiedRoleID:    "role_id_verified",
+		UnverifiedRoleID:    "role_unverified",
+		StaffRoleIDs:        []string{"role_staff"},
+		ServerHelperRoleIDs: []string{"role_helper"},
+		IDCheckerRoleIDs:    []string{"role_id_reviewer"},
 	}
 	lockMgr := syncutil.NewUserLockManager()
 	svc := service.NewIDVerificationService(idRepo, vRepo, nil, cfg.StaffRoleIDs, logger)
@@ -214,12 +216,13 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 	}
 	h.HandleIDVerifyCommand(session, unauthCmd)
 
-	// 2. Staff posts /id-verify panel
-	panelCmd := &discordgo.InteractionCreate{
+	// 2. Staff attempting to run /id-verify outside an ID verification ticket channel (e.g. ch_general) is blocked
+	outsideTicketCmd := &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
-			ID:      "int_panel",
-			GuildID: "guild_1",
-			Type:    discordgo.InteractionApplicationCommand,
+			ID:        "int_outside_ticket",
+			GuildID:   "guild_1",
+			ChannelID: "ch_general",
+			Type:      discordgo.InteractionApplicationCommand,
 			Member: &discordgo.Member{
 				User:  &discordgo.User{ID: "staff_user"},
 				Roles: []string{"role_staff"},
@@ -228,14 +231,24 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 				Name: "id-verify",
 				Options: []*discordgo.ApplicationCommandInteractionDataOption{
 					{
-						Name: "panel",
+						Name: "approve",
 						Type: discordgo.ApplicationCommandOptionSubCommand,
+						Options: []*discordgo.ApplicationCommandInteractionDataOption{
+							{
+								Name:  "member",
+								Type:  discordgo.ApplicationCommandOptionUser,
+								Value: "applicant_1",
+							},
+						},
 					},
 				},
 			},
 		},
 	}
-	h.HandleIDVerifyCommand(session, panelCmd)
+	h.HandleIDVerifyCommand(session, outsideTicketCmd)
+	if verOutside, _ := vRepo.GetByUserID(context.Background(), "guild_1", "applicant_1"); verOutside != nil && verOutside.IsVerified {
+		t.Fatal("expected /id-verify approve outside an ID verification ticket channel to be rejected")
+	}
 
 	// 3. Regular user clicks "btn_id_verify_start" to open their private ID verification channel
 	startClick := &discordgo.InteractionCreate{
@@ -284,7 +297,7 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 		t.Fatal("expected applicant_1 to NOT be verified when non-staff clicks approve")
 	}
 
-	// 5. Staff runs /id-verify approve inside the channel
+	// 5. ID Reviewer (role_id_reviewer) runs /id-verify approve inside the channel
 	approveCmd := &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
 			ID:        "int_approve",
@@ -292,8 +305,8 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 			ChannelID: "ch_id_verify_100",
 			Type:      discordgo.InteractionApplicationCommand,
 			Member: &discordgo.Member{
-				User:  &discordgo.User{ID: "staff_user"},
-				Roles: []string{"role_staff"},
+				User:  &discordgo.User{ID: "reviewer_user"},
+				Roles: []string{"role_id_reviewer"},
 			},
 			Data: discordgo.ApplicationCommandInteractionData{
 				Name: "id-verify",
@@ -328,12 +341,13 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 		t.Fatalf("expected both role_verified (%v) and role_id_verified (%v) to be granted upon ID verification approval", gotVerified, gotIDVerified)
 	}
 
-	// 6. Staff runs /id-verify status for applicant_1
+	// 6. Staff runs /id-verify status for applicant_1 inside the ID verification ticket channel
 	statusCmd := &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
-			ID:      "int_status",
-			GuildID: "guild_1",
-			Type:    discordgo.InteractionApplicationCommand,
+			ID:        "int_status",
+			GuildID:   "guild_1",
+			ChannelID: "ch_id_verify_100",
+			Type:      discordgo.InteractionApplicationCommand,
 			Member: &discordgo.Member{
 				User:  &discordgo.User{ID: "staff_user"},
 				Roles: []string{"role_staff"},
@@ -358,12 +372,13 @@ func TestIDVerifyHandler_FullFlowAndStaffGate(t *testing.T) {
 	}
 	h.HandleIDVerifyCommand(session, statusCmd)
 
-	// 7. Staff runs /id-verify revoke for applicant_1
+	// 7. Staff runs /id-verify revoke for applicant_1 inside the ID verification ticket channel
 	revokeCmd := &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
-			ID:      "int_revoke",
-			GuildID: "guild_1",
-			Type:    discordgo.InteractionApplicationCommand,
+			ID:        "int_revoke",
+			GuildID:   "guild_1",
+			ChannelID: "ch_id_verify_100",
+			Type:      discordgo.InteractionApplicationCommand,
 			Member: &discordgo.Member{
 				User:  &discordgo.User{ID: "staff_user"},
 				Roles: []string{"role_staff"},

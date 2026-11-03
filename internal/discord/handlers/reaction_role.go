@@ -19,9 +19,13 @@ import (
 
 // ReactionRoleHandler manages panel post creation, role linking, and live reaction events.
 type ReactionRoleHandler struct {
-	svc     *service.ReactionRoleService
-	lockMgr *syncutil.UserLockManager
-	logger  *slog.Logger
+	svc               *service.ReactionRoleService
+	lockMgr           *syncutil.UserLockManager
+	logger            *slog.Logger
+	joinAskToDMRoleID string
+	askToDMRoleID     string
+	dmsOpenRoleID     string
+	dmsClosedRoleID   string
 }
 
 // NewReactionRoleHandler constructs a new ReactionRoleHandler.
@@ -32,6 +36,16 @@ func NewReactionRoleHandler(svc *service.ReactionRoleService, logger *slog.Logge
 // SetLockManager attaches a UserLockManager for serializing concurrent member role changes.
 func (h *ReactionRoleHandler) SetLockManager(lm *syncutil.UserLockManager) {
 	h.lockMgr = lm
+}
+
+// SetDMRoles configures the initial join "Ask To DM" role ID and the reaction panel's
+// normal "Ask To DM", "DM's Open", and "DM's Closed" role IDs so claiming any of those
+// automatically removes the initial join "Ask To DM" role.
+func (h *ReactionRoleHandler) SetDMRoles(joinAskToDMRoleID, askToDMRoleID, dmsOpenRoleID, dmsClosedRoleID string) {
+	h.joinAskToDMRoleID = strings.TrimSpace(joinAskToDMRoleID)
+	h.askToDMRoleID = strings.TrimSpace(askToDMRoleID)
+	h.dmsOpenRoleID = strings.TrimSpace(dmsOpenRoleID)
+	h.dmsClosedRoleID = strings.TrimSpace(dmsClosedRoleID)
 }
 
 // HandlePanelCommand routes /reaction-panel subcommands (create, set-image, add-role, remove-role).
@@ -360,6 +374,85 @@ func (h *ReactionRoleHandler) HandleReactionAdd(s *discordgo.Session, r *discord
 		"user_id", r.UserID,
 		"emoji", emojiKey,
 	)
+
+	// If the user just reacted and claimed the normal "Ask To DM" role, "DM's Open" role,
+	// or "DM's Closed" role, automatically remove the initial join "Ask To DM" role.
+	h.removeJoinAskToDMRoleIfNeeded(s, r.GuildID, r.UserID, roleID)
+}
+
+// removeJoinAskToDMRoleIfNeeded checks if the granted role is one of the DM preference roles
+// ("Ask To DM", "DM's Open", or "DM's Closed") by configured ID or role name, and removes
+// the initial join "Ask To DM" role from the member.
+func (h *ReactionRoleHandler) removeJoinAskToDMRoleIfNeeded(s *discordgo.Session, guildID, userID, grantedRoleID string) {
+	if s == nil || guildID == "" || userID == "" || grantedRoleID == "" {
+		return
+	}
+
+	isDMPreferenceClaim := false
+	if grantedRoleID == h.askToDMRoleID || grantedRoleID == h.dmsOpenRoleID || grantedRoleID == h.dmsClosedRoleID {
+		if grantedRoleID != "" {
+			isDMPreferenceClaim = true
+		}
+	}
+
+	roles, _ := s.GuildRoles(guildID)
+	var askToDMRoleIDsInGuild []string
+	for _, gr := range roles {
+		if gr == nil {
+			continue
+		}
+		if gr.ID == grantedRoleID && IsDMPreferenceRoleName(gr.Name) {
+			isDMPreferenceClaim = true
+		}
+		if NormalizeDMRoleName(gr.Name) == "ask to dm" {
+			askToDMRoleIDsInGuild = append(askToDMRoleIDsInGuild, gr.ID)
+		}
+	}
+
+	if !isDMPreferenceClaim {
+		return
+	}
+
+	var rolesToRemove []string
+	seen := make(map[string]struct{})
+	addTarget := func(id string) {
+		if id == "" || id == grantedRoleID {
+			return
+		}
+		if _, exists := seen[id]; !exists {
+			seen[id] = struct{}{}
+			rolesToRemove = append(rolesToRemove, id)
+		}
+	}
+
+	if h.joinAskToDMRoleID != "" {
+		addTarget(h.joinAskToDMRoleID)
+	} else {
+		for _, rID := range askToDMRoleIDsInGuild {
+			if rID != h.askToDMRoleID {
+				addTarget(rID)
+			}
+		}
+	}
+
+	for _, removeRoleID := range rolesToRemove {
+		if err := s.GuildMemberRoleRemove(guildID, userID, removeRoleID); err != nil {
+			h.logger.Debug("reaction role: attempted removal of initial Ask To DM role",
+				"guild_id", guildID,
+				"user_id", userID,
+				"removed_role_id", removeRoleID,
+				"granted_role_id", grantedRoleID,
+				"error", err,
+			)
+		} else {
+			h.logger.Info("reaction role: removed initial Ask To DM role after member claimed DM preference role",
+				"guild_id", guildID,
+				"user_id", userID,
+				"removed_role_id", removeRoleID,
+				"granted_role_id", grantedRoleID,
+			)
+		}
+	}
 }
 
 // HandleReactionRemove revokes the mapped role when a user removes their reaction.

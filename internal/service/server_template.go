@@ -164,7 +164,13 @@ func (s *ServerTemplateService) BuildTemplate(
 			VerifiedRoleOriginalID:      cfg.VerifiedRoleID,
 			IDVerifiedRoleOriginalID:    cfg.IDVerifiedRoleID,
 			UnverifiedRoleOriginalID:    cfg.UnverifiedRoleID,
+			JoinAskToDMRoleOriginalID:   cfg.JoinAskToDMRoleID,
+			AskToDMRoleOriginalID:       cfg.AskToDMRoleID,
+			DMsOpenRoleOriginalID:       cfg.DMsOpenRoleID,
+			DMsClosedRoleOriginalID:     cfg.DMsClosedRoleID,
 			StaffRoleOriginalIDs:        append([]string(nil), cfg.StaffRoleIDs...),
+			ServerHelperRoleOriginalIDs: append([]string(nil), cfg.ServerHelperRoleIDs...),
+			IDCheckerRoleOriginalIDs:    append([]string(nil), cfg.IDCheckerRoleIDs...),
 			TicketCategoryOriginalID:    cfg.TicketCategoryID,
 			TicketLogChannelOriginalID:  cfg.TicketLogChannelID,
 			StaffAlertChannelOriginalID: cfg.StaffAlertChannelID,
@@ -336,6 +342,18 @@ func (s *ServerTemplateService) WriteDevDiscordIDsFile(
 			staffIDs = append(staffIDs, mapped)
 		}
 	}
+	var helperIDs []string
+	for _, origHelperID := range mapping.ServerHelperRoleOriginalIDs {
+		if mapped, ok := roleIDMap[origHelperID]; ok && mapped != "" {
+			helperIDs = append(helperIDs, mapped)
+		}
+	}
+	var checkerIDs []string
+	for _, origCheckerID := range mapping.IDCheckerRoleOriginalIDs {
+		if mapped, ok := roleIDMap[origCheckerID]; ok && mapped != "" {
+			checkerIDs = append(checkerIDs, mapped)
+		}
+	}
 
 	var out config.DiscordIDs
 	out.Environment = config.EnvironmentDevelopment
@@ -343,7 +361,13 @@ func (s *ServerTemplateService) WriteDevDiscordIDsFile(
 	out.Roles.VerifiedRoleID = roleIDMap[mapping.VerifiedRoleOriginalID]
 	out.Roles.IDVerifiedRoleID = roleIDMap[mapping.IDVerifiedRoleOriginalID]
 	out.Roles.UnverifiedRoleID = roleIDMap[mapping.UnverifiedRoleOriginalID]
+	out.Roles.JoinAskToDMRoleID = roleIDMap[mapping.JoinAskToDMRoleOriginalID]
+	out.Roles.AskToDMRoleID = roleIDMap[mapping.AskToDMRoleOriginalID]
+	out.Roles.DMsOpenRoleID = roleIDMap[mapping.DMsOpenRoleOriginalID]
+	out.Roles.DMsClosedRoleID = roleIDMap[mapping.DMsClosedRoleOriginalID]
 	out.Roles.StaffRoleIDs = staffIDs
+	out.Roles.ServerHelperRoleIDs = helperIDs
+	out.Roles.IDCheckerRoleIDs = checkerIDs
 
 	out.Channels.TicketCategoryID = channelIDMap[mapping.TicketCategoryOriginalID]
 	out.Channels.TicketLogChannelID = channelIDMap[mapping.TicketLogChannelOriginalID]

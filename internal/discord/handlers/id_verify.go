@@ -29,7 +29,8 @@ type IDVerifyHandler struct {
 	logger  *slog.Logger
 }
 
-// NewIDVerifyHandler constructs a new IDVerifyHandler.
+// NewIDVerifyHandler constructs a new IDVerifyHandler and ensures all configured
+// Server Staff, Server Helper, and ID Reviewer/Checker roles are registered on the service.
 func NewIDVerifyHandler(
 	svc *service.IDVerificationService,
 	cfg *config.Config,
@@ -40,6 +41,9 @@ func NewIDVerifyHandler(
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if svc != nil && cfg != nil {
+		svc.AddAllowedRoles(cfg.IDVerifyReviewerRoleIDs()...)
+	}
 	return &IDVerifyHandler{
 		svc:     svc,
 		cfg:     cfg,
@@ -49,30 +53,29 @@ func NewIDVerifyHandler(
 	}
 }
 
-// IDVerifyCommandDefinition returns the Discord slash command schema for /id-verify (Staff Only).
+// IDVerifyCommandDefinition returns the Discord slash command schema for /id-verify
+// (restricted to 18+ ID verification ticket channels and accessible to Server Staff, Server Helpers, and ID Reviewers).
 func IDVerifyCommandDefinition() *discordgo.ApplicationCommand {
-	var defaultPerms int64 = 0
 	dmPermission := false
 
 	return &discordgo.ApplicationCommand{
-		Name:                     "id-verify",
-		Description:              "18+ ID Verification management and review suite (Staff Only)",
-		DefaultMemberPermissions: &defaultPerms,
-		DMPermission:             &dmPermission,
+		Name:         "id-verify",
+		Description:  "18+ ID Verification ticket review suite (only works inside #id-verify-* ticket channels)",
+		DMPermission: &dmPermission,
 		Options: []*discordgo.ApplicationCommandOption{
 			{
 				Name:        "panel",
-				Description: "Post the interactive 18+ ID Verification Panel for members (Staff Only)",
+				Description: "Post the interactive 18+ ID Verification Panel (Staff/Reviewers)",
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 			},
 			{
 				Name:        "approve",
-				Description: "Approve a member's 18+ ID verification and grant Verified role (Staff Only)",
+				Description: "Approve this ticket's 18+ ID verification and grant Verified & ID Verified roles",
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Options: []*discordgo.ApplicationCommandOption{
 					{
 						Name:        "member",
-						Description: "Member to approve (optional if run inside their id-verify channel)",
+						Description: "Member to approve (defaults to the current id-verify ticket applicant)",
 						Type:        discordgo.ApplicationCommandOptionUser,
 						Required:    false,
 					},
@@ -86,7 +89,7 @@ func IDVerifyCommandDefinition() *discordgo.ApplicationCommand {
 			},
 			{
 				Name:        "deny",
-				Description: "Deny a member's 18+ ID verification request and close their channel (Staff Only)",
+				Description: "Deny this ticket's 18+ ID verification request and close the channel",
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Options: []*discordgo.ApplicationCommandOption{
 					{
@@ -97,7 +100,7 @@ func IDVerifyCommandDefinition() *discordgo.ApplicationCommand {
 					},
 					{
 						Name:        "member",
-						Description: "Member to deny (optional if run inside their id-verify channel)",
+						Description: "Member to deny (defaults to the current id-verify ticket applicant)",
 						Type:        discordgo.ApplicationCommandOptionUser,
 						Required:    false,
 					},
@@ -105,14 +108,14 @@ func IDVerifyCommandDefinition() *discordgo.ApplicationCommand {
 			},
 			{
 				Name:        "revoke",
-				Description: "Revoke a member's 18+ verification status and restore Unverified role (Staff Only)",
+				Description: "Revoke a member's 18+ verification status and restore Unverified role",
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Options: []*discordgo.ApplicationCommandOption{
 					{
 						Name:        "member",
-						Description: "Member whose 18+ verification should be revoked",
+						Description: "Member whose 18+ verification should be revoked (defaults to ticket applicant)",
 						Type:        discordgo.ApplicationCommandOptionUser,
-						Required:    true,
+						Required:    false,
 					},
 					{
 						Name:        "reason",
@@ -124,14 +127,14 @@ func IDVerifyCommandDefinition() *discordgo.ApplicationCommand {
 			},
 			{
 				Name:        "status",
-				Description: "Inspect a member's 18+ verification status and active ID requests (Staff Only)",
+				Description: "Inspect a member's 18+ verification status and active ID requests",
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Options: []*discordgo.ApplicationCommandOption{
 					{
 						Name:        "member",
-						Description: "Member to inspect",
+						Description: "Member to inspect (defaults to the current id-verify ticket applicant)",
 						Type:        discordgo.ApplicationCommandOptionUser,
-						Required:    true,
+						Required:    false,
 					},
 				},
 			},
@@ -139,16 +142,31 @@ func IDVerifyCommandDefinition() *discordgo.ApplicationCommand {
 	}
 }
 
-// HandleIDVerifyCommand routes incoming /id-verify subcommands (Staff Only).
+// HandleIDVerifyCommand routes incoming /id-verify subcommands (Server Staff, Helpers & ID Reviewers)
+// and enforces that the command is executed exclusively inside an 18+ ID verification ticket channel.
 func (h *IDVerifyHandler) HandleIDVerifyCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if i.Member == nil || !h.svc.IsStaff(i.Member.Roles) {
-		h.respondEphemeral(s, i, "❌ Insufficient permissions: `/id-verify` commands are restricted to Server Staff and Helpers.")
+	if i.Member == nil || !h.isAuthorizedReviewer(s, i.GuildID, i.Member.Roles) {
+		h.respondEphemeral(s, i, "❌ Insufficient permissions: `/id-verify` commands are restricted to Server Staff, Server Helpers, and ID Reviewers.")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	guildID := i.GuildID
+	if guildID == "" && h.cfg != nil {
+		guildID = h.cfg.GuildID
+	}
+
+	isTicketChan, activeReq := h.isIDVerificationTicketChannel(ctx, s, guildID, i.ChannelID)
+	if !isTicketChan {
+		h.respondEphemeral(s, i, "❌ `/id-verify` can only be used inside an 18+ ID verification ticket channel (`#id-verify-*`).")
 		return
 	}
 
 	options := i.ApplicationCommandData().Options
 	if len(options) == 0 {
-		h.respondEphemeral(s, i, "Please specify a subcommand: `/id-verify panel`, `approve`, `deny`, `revoke`, or `status`.")
+		h.respondEphemeral(s, i, "Please specify a subcommand: `/id-verify approve`, `deny`, `revoke`, `status`, or `panel`.")
 		return
 	}
 
@@ -161,9 +179,9 @@ func (h *IDVerifyHandler) HandleIDVerifyCommand(s *discordgo.Session, i *discord
 	case "deny":
 		h.handleCommandDeny(s, i, subCmd.Options)
 	case "revoke":
-		h.handleCommandRevoke(s, i, subCmd.Options)
+		h.handleCommandRevoke(s, i, subCmd.Options, activeReq)
 	case "status":
-		h.handleCommandStatus(s, i, subCmd.Options)
+		h.handleCommandStatus(s, i, subCmd.Options, activeReq)
 	default:
 		h.respondEphemeral(s, i, "Unknown `/id-verify` subcommand.")
 	}
@@ -228,6 +246,7 @@ func (h *IDVerifyHandler) handleCommandRevoke(
 	s *discordgo.Session,
 	i *discordgo.InteractionCreate,
 	opts []*discordgo.ApplicationCommandInteractionDataOption,
+	activeReq *domain.IDVerificationRequest,
 ) {
 	var targetUserID string
 	var reason string
@@ -239,6 +258,10 @@ func (h *IDVerifyHandler) handleCommandRevoke(
 		case "reason":
 			reason = opt.StringValue()
 		}
+	}
+
+	if targetUserID == "" && activeReq != nil {
+		targetUserID = activeReq.UserID
 	}
 
 	if targetUserID == "" {
@@ -295,12 +318,17 @@ func (h *IDVerifyHandler) handleCommandStatus(
 	s *discordgo.Session,
 	i *discordgo.InteractionCreate,
 	opts []*discordgo.ApplicationCommandInteractionDataOption,
+	activeReq *domain.IDVerificationRequest,
 ) {
 	var targetUserID string
 	for _, opt := range opts {
 		if opt.Name == "member" {
 			targetUserID = extractOptionUserID(s, opt)
 		}
+	}
+
+	if targetUserID == "" && activeReq != nil {
+		targetUserID = activeReq.UserID
 	}
 
 	if targetUserID == "" {
@@ -390,8 +418,8 @@ func (h *IDVerifyHandler) HandleComponentInteraction(s *discordgo.Session, i *di
 	}
 
 	if strings.HasPrefix(customID, "btn_id_verify_approve:") {
-		if i.Member == nil || !h.svc.IsStaff(i.Member.Roles) {
-			h.respondEphemeral(s, i, "❌ Insufficient permissions: Only Server Staff and Helpers can approve ID verifications.")
+		if i.Member == nil || !h.isAuthorizedReviewer(s, i.GuildID, i.Member.Roles) {
+			h.respondEphemeral(s, i, "❌ Insufficient permissions: Only Server Staff, Server Helpers, and ID Reviewers can approve ID verifications.")
 			return true
 		}
 		targetUserID := strings.TrimPrefix(customID, "btn_id_verify_approve:")
@@ -400,8 +428,8 @@ func (h *IDVerifyHandler) HandleComponentInteraction(s *discordgo.Session, i *di
 	}
 
 	if strings.HasPrefix(customID, "btn_id_verify_deny:") {
-		if i.Member == nil || !h.svc.IsStaff(i.Member.Roles) {
-			h.respondEphemeral(s, i, "❌ Insufficient permissions: Only Server Staff and Helpers can deny ID verifications.")
+		if i.Member == nil || !h.isAuthorizedReviewer(s, i.GuildID, i.Member.Roles) {
+			h.respondEphemeral(s, i, "❌ Insufficient permissions: Only Server Staff, Server Helpers, and ID Reviewers can deny ID verifications.")
 			return true
 		}
 		targetUserID := strings.TrimPrefix(customID, "btn_id_verify_deny:")
@@ -419,8 +447,8 @@ func (h *IDVerifyHandler) HandleModalSubmit(s *discordgo.Session, i *discordgo.I
 		return false
 	}
 
-	if i.Member == nil || !h.svc.IsStaff(i.Member.Roles) {
-		h.respondEphemeral(s, i, "❌ Insufficient permissions: Only Server Staff and Helpers can deny ID verifications.")
+	if i.Member == nil || !h.isAuthorizedReviewer(s, i.GuildID, i.Member.Roles) {
+		h.respondEphemeral(s, i, "❌ Insufficient permissions: Only Server Staff, Server Helpers, and ID Reviewers can deny ID verifications.")
 		return true
 	}
 
@@ -487,12 +515,13 @@ func (h *IDVerifyHandler) processStartVerification(s *discordgo.Session, i *disc
 	// 3. Resolve parent category
 	categoryID := h.resolveVerificationCategory(s, guildID)
 
-	// 4. Construct strict permission overwrites: Staff + Applicant + Bot ONLY
+	// 4. Construct permission overwrites: Server Staff + Server Helpers + ID Reviewers + Applicant + Bot
 	botID := ""
 	if s.State != nil && s.State.User != nil {
 		botID = s.State.User.ID
 	}
-	overwrites := h.buildChannelOverwrites(guildID, caller.ID, botID)
+	reviewerRoleIDs := h.resolveReviewerRoleIDs(s, guildID)
+	overwrites := h.buildChannelOverwritesWithRoles(guildID, caller.ID, botID, reviewerRoleIDs)
 
 	// 5. Generate sanitized channel name
 	cleanName := channelNameSanitizer.ReplaceAllString(strings.ToLower(caller.Username), "")
@@ -510,7 +539,7 @@ func (h *IDVerifyHandler) processStartVerification(s *discordgo.Session, i *disc
 		Type:                 discordgo.ChannelTypeGuildText,
 		ParentID:             categoryID,
 		PermissionOverwrites: overwrites,
-		Topic:                fmt.Sprintf("18+ ID Verification for %s (%s) — Staff Only Review", caller.Username, caller.ID),
+		Topic:                fmt.Sprintf("18+ ID Verification for %s (%s) — Staff, Helpers & ID Reviewers", caller.Username, caller.ID),
 	})
 	if err != nil {
 		h.logger.Error("failed to create ID verification channel", "error", err, "guild_id", guildID, "user_id", caller.ID)
@@ -527,8 +556,8 @@ func (h *IDVerifyHandler) processStartVerification(s *discordgo.Session, i *disc
 		return
 	}
 
-	// 8. Post instructions embed and staff review buttons in the new channel
-	h.sendVerificationChannelWelcome(s, createdChannel.ID, caller.ID, req)
+	// 8. Post instructions embed and reviewer buttons in the new channel
+	h.sendVerificationChannelWelcome(s, createdChannel.ID, caller.ID, req, reviewerRoleIDs)
 
 	// 9. Notify user ephemerally
 	h.sendDeferredFollowup(s, i, fmt.Sprintf("🪪 Your private **18+ ID Verification** channel has been opened: <#%s>", createdChannel.ID))
@@ -753,6 +782,7 @@ func (h *IDVerifyHandler) sendVerificationChannelWelcome(
 	s *discordgo.Session,
 	channelID, userID string,
 	req *domain.IDVerificationRequest,
+	reviewerRoleIDs []string,
 ) {
 	embed := &discordgo.MessageEmbed{
 		Title: "🪪 18+ Age & ID Verification Session",
@@ -763,7 +793,7 @@ func (h *IDVerifyHandler) sendVerificationChannelWelcome(
 				"2️⃣ **A Handwritten Physical Note** placed next to your ID showing:\n"+
 				"   • Your **Discord Username**\n"+
 				"   • **Today's Date**\n\n"+
-				"🔒 **Privacy Guarantee:** Only Server Staff can view this channel. As soon as a staff member approves or closes this review, **this channel and your uploaded photo are permanently deleted**.",
+				"🔒 **Privacy Guarantee:** Only Server Staff, Server Helpers, and ID Reviewers can view this channel. As soon as your review is approved or closed, **this channel and your uploaded photo are permanently deleted**.",
 			userID,
 		),
 		Color: 0x5865F2,
@@ -775,17 +805,17 @@ func (h *IDVerifyHandler) sendVerificationChannelWelcome(
 			},
 			{
 				Name:   "Status",
-				Value:  "🟡 Pending Staff Review",
+				Value:  "🟡 Pending ID Review",
 				Inline: true,
 			},
 			{
-				Name:   "Staff Controls",
-				Value:  "Use the buttons below or `/id-verify approve` / `/id-verify deny`.",
+				Name:   "Reviewer Controls",
+				Value:  "Server Staff, Helpers & ID Reviewers: use the buttons below or `/id-verify approve` / `/id-verify deny`.",
 				Inline: false,
 			},
 		},
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: "Syn Security Suite • Staff-Gated 18+ ID Verification",
+			Text: "Syn Security Suite • 18+ ID Verification",
 		},
 		Timestamp: req.CreatedAt.Format(time.RFC3339),
 	}
@@ -807,8 +837,16 @@ func (h *IDVerifyHandler) sendVerificationChannelWelcome(
 		},
 	}
 
+	var rolePings strings.Builder
+	for _, roleID := range reviewerRoleIDs {
+		if roleID != "" {
+			rolePings.WriteString(fmt.Sprintf("<@&%s> ", roleID))
+		}
+	}
+	content := strings.TrimSpace(fmt.Sprintf("<@%s> %s", userID, strings.TrimSpace(rolePings.String())))
+
 	_, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Content:    fmt.Sprintf("<@%s>", userID),
+		Content:    content,
 		Embeds:     []*discordgo.MessageEmbed{embed},
 		Components: []discordgo.MessageComponent{staffControls},
 	})
@@ -878,6 +916,14 @@ func (h *IDVerifyHandler) resolveVerificationCategory(s *discordgo.Session, guil
 }
 
 func (h *IDVerifyHandler) buildChannelOverwrites(guildID, userID, botID string) []*discordgo.PermissionOverwrite {
+	var reviewerRoleIDs []string
+	if h.cfg != nil {
+		reviewerRoleIDs = h.cfg.IDVerifyReviewerRoleIDs()
+	}
+	return h.buildChannelOverwritesWithRoles(guildID, userID, botID, reviewerRoleIDs)
+}
+
+func (h *IDVerifyHandler) buildChannelOverwritesWithRoles(guildID, userID, botID string, reviewerRoleIDs []string) []*discordgo.PermissionOverwrite {
 	overwrites := []*discordgo.PermissionOverwrite{
 		{
 			ID:    guildID,
@@ -897,9 +943,16 @@ func (h *IDVerifyHandler) buildChannelOverwrites(guildID, userID, botID string) 
 		},
 	}
 
-	for _, staffRoleID := range h.cfg.StaffRoleIDs {
+	// Grant ViewChannel & review permissions to Server Staff, Server Helpers, AND ID Reviewers/Checkers
+	seen := map[string]bool{guildID: true}
+	for _, reviewerRoleID := range reviewerRoleIDs {
+		trimmed := strings.TrimSpace(reviewerRoleID)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
 		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
-			ID:   staffRoleID,
+			ID:   trimmed,
 			Type: discordgo.PermissionOverwriteTypeRole,
 			Allow: discordgo.PermissionViewChannel |
 				discordgo.PermissionSendMessages |
@@ -927,6 +980,120 @@ func (h *IDVerifyHandler) buildChannelOverwrites(guildID, userID, botID string) 
 	}
 
 	return overwrites
+}
+
+// resolveReviewerRoleIDs returns the deduplicated list of all role IDs authorized to view and
+// review 18+ ID verification tickets: configured Server Staff, Server Helpers, and ID Reviewers/Checkers,
+// plus any matching role discovered in the guild or resource cache.
+func (h *IDVerifyHandler) resolveReviewerRoleIDs(s *discordgo.Session, guildID string) []string {
+	var result []string
+	seen := make(map[string]struct{})
+	addRole := func(id string) {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
+			return
+		}
+		if _, exists := seen[trimmed]; !exists {
+			seen[trimmed] = struct{}{}
+			result = append(result, trimmed)
+		}
+	}
+
+	if h.cfg != nil {
+		for _, id := range h.cfg.IDVerifyReviewerRoleIDs() {
+			addRole(id)
+		}
+	}
+
+	if h.cache != nil {
+		for _, roleName := range []string{
+			"id reviewer", "id reviewers", "id-reviewer", "id-reviewers",
+			"id checker", "id checkers", "id-checker", "id-checkers",
+			"server helper", "server helpers", "helper", "helpers",
+			"staff", "server staff",
+		} {
+			if id, ok := h.cache.GetRoleID(roleName); ok {
+				addRole(id)
+			}
+		}
+	}
+
+	if s != nil && guildID != "" {
+		if guildRoles, err := s.GuildRoles(guildID); err == nil {
+			for _, gr := range guildRoles {
+				if gr != nil && isIDVerifyReviewerRoleName(gr.Name) {
+					addRole(gr.ID)
+				}
+			}
+		}
+	}
+
+	if h.svc != nil && len(result) > 0 {
+		h.svc.AddAllowedRoles(result...)
+	}
+
+	return result
+}
+
+func (h *IDVerifyHandler) isAuthorizedReviewer(s *discordgo.Session, guildID string, memberRoles []string) bool {
+	if h.cfg != nil && h.svc != nil {
+		h.svc.AddAllowedRoles(h.cfg.IDVerifyReviewerRoleIDs()...)
+	}
+	if h.svc != nil && h.svc.IsStaff(memberRoles) {
+		return true
+	}
+	allowed := h.resolveReviewerRoleIDs(s, guildID)
+	for _, mr := range memberRoles {
+		for _, ar := range allowed {
+			if mr == ar {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isIDVerificationTicketChannel checks whether channelID is an 18+ ID verification ticket channel
+// (either recorded in the id_verification_requests table or a Discord channel named "id-verify-*").
+func (h *IDVerifyHandler) isIDVerificationTicketChannel(
+	ctx context.Context,
+	s *discordgo.Session,
+	guildID, channelID string,
+) (bool, *domain.IDVerificationRequest) {
+	if strings.TrimSpace(channelID) == "" {
+		return false, nil
+	}
+
+	if h.svc != nil {
+		if req, err := h.svc.GetRequestByChannel(ctx, guildID, channelID); err == nil && req != nil {
+			return true, req
+		}
+	}
+
+	if s != nil {
+		if ch, err := s.Channel(channelID); err == nil && ch != nil {
+			lowerName := strings.ToLower(strings.TrimSpace(ch.Name))
+			if strings.HasPrefix(lowerName, "id-verify-") {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+func isIDVerifyReviewerRoleName(name string) bool {
+	norm := strings.ToLower(strings.TrimSpace(name))
+	norm = strings.ReplaceAll(norm, "_", " ")
+	norm = strings.ReplaceAll(norm, "-", " ")
+	norm = strings.Join(strings.Fields(norm), " ")
+	switch norm {
+	case "id reviewer", "id reviewers", "id checker", "id checkers",
+		"id verifier", "id verifiers", "server helper", "server helpers",
+		"server staff", "staff":
+		return true
+	}
+	return false
 }
 
 func (h *IDVerifyHandler) logIDVerifyEvent(

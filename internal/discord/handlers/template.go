@@ -488,6 +488,40 @@ func (h *TemplateHandler) HandleApplyCommand(s *discordgo.Session, i *discordgo.
 				h.cfg.StaffRoleIDs = mappedStaff
 			}
 		}
+		if len(tmpl.BotMapping.ServerHelperRoleOriginalIDs) > 0 {
+			var mappedHelpers []string
+			for _, origID := range tmpl.BotMapping.ServerHelperRoleOriginalIDs {
+				if id := roleIDMap[origID]; id != "" {
+					mappedHelpers = append(mappedHelpers, id)
+				}
+			}
+			if len(mappedHelpers) > 0 {
+				h.cfg.ServerHelperRoleIDs = mappedHelpers
+			}
+		}
+		if len(tmpl.BotMapping.IDCheckerRoleOriginalIDs) > 0 {
+			var mappedCheckers []string
+			for _, origID := range tmpl.BotMapping.IDCheckerRoleOriginalIDs {
+				if id := roleIDMap[origID]; id != "" {
+					mappedCheckers = append(mappedCheckers, id)
+				}
+			}
+			if len(mappedCheckers) > 0 {
+				h.cfg.IDCheckerRoleIDs = mappedCheckers
+			}
+		}
+		if id := roleIDMap[tmpl.BotMapping.JoinAskToDMRoleOriginalID]; id != "" {
+			h.cfg.JoinAskToDMRoleID = id
+		}
+		if id := roleIDMap[tmpl.BotMapping.AskToDMRoleOriginalID]; id != "" {
+			h.cfg.AskToDMRoleID = id
+		}
+		if id := roleIDMap[tmpl.BotMapping.DMsOpenRoleOriginalID]; id != "" {
+			h.cfg.DMsOpenRoleID = id
+		}
+		if id := roleIDMap[tmpl.BotMapping.DMsClosedRoleOriginalID]; id != "" {
+			h.cfg.DMsClosedRoleID = id
+		}
 		if id := channelIDMap[tmpl.BotMapping.TicketCategoryOriginalID]; id != "" {
 			h.cfg.TicketCategoryID = id
 		}

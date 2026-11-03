@@ -333,3 +333,65 @@ func TestDisambiguateDuplicateNamedRole(t *testing.T) {
 		t.Fatalf("expected unique role to remain unchanged, got resolved=%s changed=%v", resolved3, changed3)
 	}
 }
+
+func TestReactionRoleHandler_RemoveJoinAskToDMRoleWhenClaimingDMPreference(t *testing.T) {
+	t.Parallel()
+
+	silentLogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	handler := NewReactionRoleHandler(nil, silentLogger)
+	handler.SetDMRoles("role_join_ask_dm", "role_normal_ask_dm", "role_dms_open", "role_dms_closed")
+
+	var removedRoles []string
+	s, _ := discordgo.New("Bot mock")
+	s.Client.Transport = mockRT(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodDelete && strings.Contains(req.URL.Path, "/roles/") {
+			parts := strings.Split(req.URL.Path, "/roles/")
+			removedRoles = append(removedRoles, parts[len(parts)-1])
+		}
+		if req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/roles") {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(`[
+					{"id":"role_join_ask_dm","name":"Ask To DM"},
+					{"id":"role_normal_ask_dm","name":"Ask To DM"},
+					{"id":"role_dms_open","name":"DM's Open"},
+					{"id":"role_dms_closed","name":"DM's Closed"}
+				]`)),
+				Header: make(http.Header),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	// 1. User claims normal "Ask To DM" role -> removes role_join_ask_dm
+	removedRoles = nil
+	handler.removeJoinAskToDMRoleIfNeeded(s, "guild_1", "user_1", "role_normal_ask_dm")
+	if len(removedRoles) == 0 || removedRoles[0] != "role_join_ask_dm" {
+		t.Fatalf("expected role_join_ask_dm to be removed when claiming normal Ask To DM role, got %v", removedRoles)
+	}
+
+	// 2. User claims "DM's Open" role -> removes role_join_ask_dm (and any Ask To DM role)
+	removedRoles = nil
+	handler.removeJoinAskToDMRoleIfNeeded(s, "guild_1", "user_1", "role_dms_open")
+	if len(removedRoles) == 0 || removedRoles[0] != "role_join_ask_dm" {
+		t.Fatalf("expected role_join_ask_dm to be removed when claiming DM's Open role, got %v", removedRoles)
+	}
+
+	// 3. User claims "DM's Closed" role -> removes role_join_ask_dm
+	removedRoles = nil
+	handler.removeJoinAskToDMRoleIfNeeded(s, "guild_1", "user_1", "role_dms_closed")
+	if len(removedRoles) == 0 || removedRoles[0] != "role_join_ask_dm" {
+		t.Fatalf("expected role_join_ask_dm to be removed when claiming DM's Closed role, got %v", removedRoles)
+	}
+
+	// 4. User claims an unrelated role -> does NOT remove role_join_ask_dm
+	removedRoles = nil
+	handler.removeJoinAskToDMRoleIfNeeded(s, "guild_1", "user_1", "role_unrelated")
+	if len(removedRoles) != 0 {
+		t.Fatalf("expected no roles removed when claiming unrelated role, got %v", removedRoles)
+	}
+}

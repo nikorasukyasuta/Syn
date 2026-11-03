@@ -213,8 +213,8 @@ func (h *TicketHandler) buildTicketHubOverwrites(guildID, botID string) []*disco
 		}
 	}
 
-	// 3. Allow Staff roles to view and manage messages
-	for _, staffRoleID := range h.cfg.StaffRoleIDs {
+	// 3. Allow Staff, Server Helper, and ID Reviewer roles to view the hub
+	for _, staffRoleID := range h.cfg.IDVerifyReviewerRoleIDs() {
 		if staffRoleID == "" || seenRoles[staffRoleID] {
 			continue
 		}

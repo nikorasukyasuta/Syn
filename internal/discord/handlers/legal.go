@@ -45,16 +45,24 @@ func PrivacyCommandDefinition() *discordgo.ApplicationCommand {
 
 // HandleTermsCommand ephemerally renders the Terms & Conditions summary and web link.
 func (h *LegalHandler) HandleTermsCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	baseURL := strings.TrimRight(h.cfg.WebBaseURL, "/")
-	if baseURL == "" {
-		baseURL = "http://localhost:8080"
+	var rawBase, port string
+	if h.cfg != nil {
+		rawBase = h.cfg.WebBaseURL
+		port = h.cfg.WebPort
 	}
+	baseURL := config.NormalizeWebBaseURL(rawBase, port)
 	termsURL := baseURL + "/terms"
+	privacyURL := baseURL + "/privacy"
 
 	embed := &discordgo.MessageEmbed{
 		Title: "📜 Terms & Conditions • Syn Discord Suite",
 		Description: "By participating in this community and interacting with the Syn Bot, you agree to these Terms and Conditions.\n\n" +
-			fmt.Sprintf("🌐 **Full Web Version:** [Read Online](%s)", termsURL),
+			fmt.Sprintf("🌐 **Website Portal:** [%s](%s)\n📜 **Full Terms & Conditions:** [Read Online](%s)\n🔒 **Privacy Policy:** [Read Online](%s)",
+				strings.TrimPrefix(strings.TrimPrefix(baseURL, "https://"), "http://"),
+				baseURL,
+				termsURL,
+				privacyURL,
+			),
 		Color: 0x5865F2,
 		Fields: []*discordgo.MessageEmbedField{
 			{
@@ -92,6 +100,18 @@ func (h *LegalHandler) HandleTermsCommand(s *discordgo.Session, i *discordgo.Int
 				URL:   termsURL,
 				Emoji: &discordgo.ComponentEmoji{Name: "📜"},
 			},
+			discordgo.Button{
+				Label: "Privacy Policy",
+				Style: discordgo.LinkButton,
+				URL:   privacyURL,
+				Emoji: &discordgo.ComponentEmoji{Name: "🔒"},
+			},
+			discordgo.Button{
+				Label: "Website Portal",
+				Style: discordgo.LinkButton,
+				URL:   baseURL,
+				Emoji: &discordgo.ComponentEmoji{Name: "🌐"},
+			},
 		},
 	}
 
@@ -107,16 +127,24 @@ func (h *LegalHandler) HandleTermsCommand(s *discordgo.Session, i *discordgo.Int
 
 // HandlePrivacyCommand ephemerally renders the Privacy Policy summary and web link.
 func (h *LegalHandler) HandlePrivacyCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	baseURL := strings.TrimRight(h.cfg.WebBaseURL, "/")
-	if baseURL == "" {
-		baseURL = "http://localhost:8080"
+	var rawBase, port string
+	if h.cfg != nil {
+		rawBase = h.cfg.WebBaseURL
+		port = h.cfg.WebPort
 	}
+	baseURL := config.NormalizeWebBaseURL(rawBase, port)
+	termsURL := baseURL + "/terms"
 	privacyURL := baseURL + "/privacy"
 
 	embed := &discordgo.MessageEmbed{
 		Title: "🔒 Privacy Policy • Syn Discord Suite",
 		Description: "We take your data privacy seriously and adhere strictly to data minimization and automated deletion standards.\n\n" +
-			fmt.Sprintf("🌐 **Full Web Version:** [Read Online](%s)", privacyURL),
+			fmt.Sprintf("🌐 **Website Portal:** [%s](%s)\n🔒 **Full Privacy Policy:** [Read Online](%s)\n📜 **Terms & Conditions:** [Read Online](%s)",
+				strings.TrimPrefix(strings.TrimPrefix(baseURL, "https://"), "http://"),
+				baseURL,
+				privacyURL,
+				termsURL,
+			),
 		Color: 0x10B981, // Emerald / Green
 		Fields: []*discordgo.MessageEmbedField{
 			{
@@ -140,7 +168,7 @@ func (h *LegalHandler) HandlePrivacyCommand(s *discordgo.Session, i *discordgo.I
 					"on an isolated Docker network with no direct public internet exposure.",
 			},
 			{
-				Name: "📬 5. Data Access & Deletion Requests",
+				Name:  "📬 5. Data Access & Deletion Requests",
 				Value: "You may request an export or deletion of your moderation records by opening a ticket with `/ticket open type:support`.",
 			},
 		},
@@ -158,6 +186,18 @@ func (h *LegalHandler) HandlePrivacyCommand(s *discordgo.Session, i *discordgo.I
 				URL:   privacyURL,
 				Emoji: &discordgo.ComponentEmoji{Name: "🔒"},
 			},
+			discordgo.Button{
+				Label: "Terms & Conditions",
+				Style: discordgo.LinkButton,
+				URL:   termsURL,
+				Emoji: &discordgo.ComponentEmoji{Name: "📜"},
+			},
+			discordgo.Button{
+				Label: "Website Portal",
+				Style: discordgo.LinkButton,
+				URL:   baseURL,
+				Emoji: &discordgo.ComponentEmoji{Name: "🌐"},
+			},
 		},
 	}
 
@@ -170,4 +210,3 @@ func (h *LegalHandler) HandlePrivacyCommand(s *discordgo.Session, i *discordgo.I
 		},
 	})
 }
-

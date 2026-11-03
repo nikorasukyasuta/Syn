@@ -274,8 +274,7 @@ func BenchmarkSampleNow(b *testing.B) {
 	writer := &mockWriteCloser{}
 	mon := NewMonitorWithWriter(DefaultConfig(), writer, stubDBStats{}, stubQueueStats{}, stubLockStats{}, silentLogger)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = mon.SampleNow()
 	}
 }

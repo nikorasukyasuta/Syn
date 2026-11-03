@@ -289,7 +289,7 @@ func (h *FilterHandler) sendViolationEmbed(
 	}
 
 	var staffPings strings.Builder
-	for _, roleID := range h.cfg.StaffRoleIDs {
+	for _, roleID := range h.cfg.TicketStaffRoleIDs() {
 		staffPings.WriteString(fmt.Sprintf("<@&%s> ", roleID))
 	}
 
@@ -659,8 +659,25 @@ func (h *FilterHandler) buildChannelOverwrites(guildID, creatorID, botID string)
 		})
 	}
 
-	// 4. Allow Staff and Server Helper roles full access
-	for _, roleID := range h.cfg.StaffRoleIDs {
+	// 4. Explicitly deny ViewChannel to Server Helpers and ID Checkers on moderation tickets
+	staffSet := make(map[string]struct{})
+	for _, roleID := range h.cfg.TicketStaffRoleIDs() {
+		staffSet[roleID] = struct{}{}
+	}
+	for _, nonTicketRoleID := range h.cfg.NonTicketHelperAndCheckerRoleIDs() {
+		if _, isStaff := staffSet[nonTicketRoleID]; isStaff || nonTicketRoleID == guildID {
+			continue
+		}
+		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
+			ID:    nonTicketRoleID,
+			Type:  discordgo.PermissionOverwriteTypeRole,
+			Deny:  discordgo.PermissionViewChannel,
+			Allow: 0,
+		})
+	}
+
+	// 5. Allow ONLY Server Staff roles full access
+	for _, roleID := range h.cfg.TicketStaffRoleIDs() {
 		if roleID == "" {
 			continue
 		}

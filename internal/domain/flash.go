@@ -5,6 +5,12 @@ import (
 	"time"
 )
 
+// DefaultFlashDashDuration is the default 30-minute timer for Flash and Dash channels.
+const (
+	DefaultFlashDashDuration    = 30 * time.Minute
+	DefaultFlashDashDurationSec = 1800
+)
+
 // FlashChannelConfig stores configuration and auto-delete TTL for a Flash and Dash channel.
 type FlashChannelConfig struct {
 	GuildID     string    `json:"guild_id"`
@@ -14,10 +20,10 @@ type FlashChannelConfig struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-// Duration returns the configured time.Duration for the channel TTL (default 5m).
+// Duration returns the configured time.Duration for the channel TTL (default 30m).
 func (c *FlashChannelConfig) Duration() time.Duration {
 	if c.DurationSec <= 0 {
-		return 5 * time.Minute
+		return DefaultFlashDashDuration
 	}
 	return time.Duration(c.DurationSec) * time.Second
 }

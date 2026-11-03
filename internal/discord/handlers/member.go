@@ -11,13 +11,14 @@ import (
 	"syn/internal/discord/syncutil"
 )
 
-// MemberJoinHandler automatically assigns the configured Unverified role
+// MemberJoinHandler automatically assigns the configured Unverified role and initial Ask To DM role
 // to newly joined human members of the server.
 type MemberJoinHandler struct {
-	guildID          string
-	unverifiedRoleID string
-	lockMgr          *syncutil.UserLockManager
-	logger           *slog.Logger
+	guildID           string
+	unverifiedRoleID  string
+	joinAskToDMRoleID string
+	lockMgr           *syncutil.UserLockManager
+	logger            *slog.Logger
 }
 
 // NewMemberJoinHandler constructs a new MemberJoinHandler.
@@ -27,6 +28,11 @@ func NewMemberJoinHandler(guildID, unverifiedRoleID string, logger *slog.Logger)
 		unverifiedRoleID: unverifiedRoleID,
 		logger:           logger,
 	}
+}
+
+// SetJoinAskToDMRole configures the initial "Ask To DM" role ID assigned automatically on member join.
+func (h *MemberJoinHandler) SetJoinAskToDMRole(roleID string) {
+	h.joinAskToDMRoleID = strings.TrimSpace(roleID)
 }
 
 // SetLockManager attaches a UserLockManager for serializing concurrent member operations.
@@ -76,15 +82,43 @@ func (h *MemberJoinHandler) HandleGuildMemberAdd(s *discordgo.Session, m *discor
 	)
 
 	// Attempt role assignment with retries to withstand transient Discord API rate limits or consistency delays
+	h.assignRoleWithRetry(s, m.GuildID, m.User.ID, m.User.Username, unverifiedRole, "unverified")
+
+	// Also assign the initial "Ask To DM" role on join (either configured by ID or discovered by name)
+	askToDMRole := h.resolveJoinAskToDMRole(s, m.GuildID)
+	if askToDMRole != "" && askToDMRole != unverifiedRole {
+		h.assignRoleWithRetry(s, m.GuildID, m.User.ID, m.User.Username, askToDMRole, "ask_to_dm")
+	}
+}
+
+func (h *MemberJoinHandler) resolveJoinAskToDMRole(s *discordgo.Session, guildID string) string {
+	if roleID := strings.TrimSpace(h.joinAskToDMRoleID); roleID != "" {
+		return roleID
+	}
+	if s == nil || guildID == "" {
+		return ""
+	}
+	if roles, err := s.GuildRoles(guildID); err == nil {
+		for _, r := range roles {
+			if r != nil && NormalizeDMRoleName(r.Name) == "ask to dm" {
+				return r.ID
+			}
+		}
+	}
+	return ""
+}
+
+func (h *MemberJoinHandler) assignRoleWithRetry(s *discordgo.Session, guildID, userID, username, roleID, roleLabel string) {
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		err := s.GuildMemberRoleAdd(m.GuildID, m.User.ID, unverifiedRole)
+		err := s.GuildMemberRoleAdd(guildID, userID, roleID)
 		if err == nil {
-			h.logger.Info("successfully assigned unverified role to new member",
-				"guild_id", m.GuildID,
-				"user_id", m.User.ID,
-				"username", m.User.Username,
-				"role_id", unverifiedRole,
+			h.logger.Info("successfully assigned join role to new member",
+				"guild_id", guildID,
+				"user_id", userID,
+				"username", username,
+				"role_id", roleID,
+				"role_type", roleLabel,
 				"attempt", attempt,
 			)
 			return
@@ -93,30 +127,33 @@ func (h *MemberJoinHandler) HandleGuildMemberAdd(s *discordgo.Session, m *discor
 		lastErr = err
 		var restErr *discordgo.RESTError
 		if errors.As(err, &restErr) && restErr.Message != nil && restErr.Message.Code == 50013 {
-			h.logger.Error("failed to assign unverified role due to Discord Role Hierarchy (50013 Missing Permissions). The Bot role must be higher than the Unverified role in Server Settings -> Roles, and have 'Manage Roles' permission!",
-				"guild_id", m.GuildID,
-				"user_id", m.User.ID,
-				"username", m.User.Username,
-				"role_id", unverifiedRole,
+			h.logger.Error("failed to assign join role due to Discord Role Hierarchy (50013 Missing Permissions). The Bot role must be higher than the target role in Server Settings -> Roles, and have 'Manage Roles' permission!",
+				"guild_id", guildID,
+				"user_id", userID,
+				"username", username,
+				"role_id", roleID,
+				"role_type", roleLabel,
 				"error", err,
 			)
 			return
 		}
 
-		h.logger.Warn("retrying unverified role assignment to new member",
-			"guild_id", m.GuildID,
-			"user_id", m.User.ID,
+		h.logger.Warn("retrying join role assignment to new member",
+			"guild_id", guildID,
+			"user_id", userID,
+			"role_type", roleLabel,
 			"attempt", attempt,
 			"error", err,
 		)
 		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
 	}
 
-	h.logger.Error("failed to assign unverified role to new member after retries",
-		"guild_id", m.GuildID,
-		"user_id", m.User.ID,
-		"username", m.User.Username,
-		"role_id", unverifiedRole,
+	h.logger.Error("failed to assign join role to new member after retries",
+		"guild_id", guildID,
+		"user_id", userID,
+		"username", username,
+		"role_id", roleID,
+		"role_type", roleLabel,
 		"error", lastErr,
 	)
 }
@@ -182,6 +219,9 @@ func (h *MemberJoinHandler) SyncUnassignedMembers(s *discordgo.Session, verified
 						"username", m.User.Username,
 					)
 				}
+				if joinDMRole := strings.TrimSpace(h.joinAskToDMRoleID); joinDMRole != "" && joinDMRole != unverifiedRole {
+					_ = s.GuildMemberRoleAdd(guildID, m.User.ID, joinDMRole)
+				}
 			}
 		}
 
@@ -193,5 +233,27 @@ func (h *MemberJoinHandler) SyncUnassignedMembers(s *discordgo.Session, verified
 
 	h.logger.Info("unverified member role sweep completed", "guild_id", guildID, "assigned_count", assignedCount)
 	return nil
+}
+
+// NormalizeDMRoleName normalizes a Discord role name for DM preference comparison
+// (e.g. "DM's Open" -> "dms open", "Ask To DM" -> "ask to dm", "DM’s Closed" -> "dms closed").
+func NormalizeDMRoleName(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	s = strings.NewReplacer("'", "", "’", "", "`", "", "-", " ", "_", " ").Replace(s)
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// IsDMPreferenceRoleName returns true if the role name represents any of the three DM preference roles:
+// "Ask To DM", "DM's Open", or "DM's Closed".
+func IsDMPreferenceRoleName(raw string) bool {
+	norm := NormalizeDMRoleName(raw)
+	switch norm {
+	case "ask to dm", "ask to dms", "ask before dm",
+		"dms open", "dm open", "open dms",
+		"dms closed", "dm closed", "closed dms":
+		return true
+	default:
+		return false
+	}
 }
 

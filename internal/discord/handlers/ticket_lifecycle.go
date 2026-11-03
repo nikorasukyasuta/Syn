@@ -334,7 +334,9 @@ func (h *TicketHandler) resolveLogChannel(s *discordgo.Session, guildID string) 
 	return ""
 }
 
-// buildChannelOverwrites creates strict permission overwrites: Staff + Creator ONLY.
+// buildChannelOverwrites creates strict permission overwrites: Server Staff + Creator ONLY.
+// Server Helpers and ID Checkers are explicitly denied ViewChannel on general tickets
+// so only Server Staff can see all tickets.
 func (h *TicketHandler) buildChannelOverwrites(guildID, creatorID, botID string) []*discordgo.PermissionOverwrite {
 	overwrites := []*discordgo.PermissionOverwrite{
 		// 1. Hide from @everyone
@@ -357,8 +359,26 @@ func (h *TicketHandler) buildChannelOverwrites(guildID, creatorID, botID string)
 		},
 	}
 
-	// 3. Allow Staff roles
-	for _, staffRoleID := range h.cfg.StaffRoleIDs {
+	// 3. Explicitly deny ViewChannel to Server Helpers and ID Checkers on general tickets
+	// (prevents inheriting ViewChannel if the parent Ticket category allows Helpers/Checkers)
+	staffSet := make(map[string]struct{})
+	for _, staffRoleID := range h.cfg.TicketStaffRoleIDs() {
+		staffSet[staffRoleID] = struct{}{}
+	}
+	for _, nonTicketRoleID := range h.cfg.NonTicketHelperAndCheckerRoleIDs() {
+		if _, isStaff := staffSet[nonTicketRoleID]; isStaff || nonTicketRoleID == guildID {
+			continue
+		}
+		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
+			ID:    nonTicketRoleID,
+			Type:  discordgo.PermissionOverwriteTypeRole,
+			Deny:  discordgo.PermissionViewChannel,
+			Allow: 0,
+		})
+	}
+
+	// 4. Allow ONLY Server Staff roles to view and manage general tickets
+	for _, staffRoleID := range h.cfg.TicketStaffRoleIDs() {
 		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
 			ID:   staffRoleID,
 			Type: discordgo.PermissionOverwriteTypeRole,
@@ -372,7 +392,7 @@ func (h *TicketHandler) buildChannelOverwrites(guildID, creatorID, botID string)
 		})
 	}
 
-	// 4. Allow bot itself
+	// 5. Allow bot itself
 	if botID != "" {
 		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
 			ID:   botID,

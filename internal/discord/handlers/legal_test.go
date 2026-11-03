@@ -23,8 +23,9 @@ func TestLegalCommandDefinitions(t *testing.T) {
 }
 
 func TestLegalHandler_HandleTermsCommand(t *testing.T) {
+	// Even if a bare domain is configured without scheme, NormalizeWebBaseURL ensures https://
 	cfg := &config.Config{
-		WebBaseURL: "https://syn.example.com",
+		WebBaseURL: "syn.example.com",
 	}
 	h := handlers.NewLegalHandler(cfg)
 
@@ -63,4 +64,3 @@ func TestLegalHandler_HandlePrivacyCommand(t *testing.T) {
 
 	h.HandlePrivacyCommand(session, interaction)
 }
-
