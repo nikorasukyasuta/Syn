@@ -9,6 +9,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"syn/internal/discord/syncutil"
+	"syn/internal/service"
 )
 
 // MemberJoinHandler automatically assigns the configured Unverified role and initial Ask To DM role
@@ -17,6 +18,7 @@ type MemberJoinHandler struct {
 	guildID           string
 	unverifiedRoleID  string
 	joinAskToDMRoleID string
+	honeypotSvc       *service.HoneypotService
 	lockMgr           *syncutil.UserLockManager
 	logger            *slog.Logger
 }
@@ -33,6 +35,12 @@ func NewMemberJoinHandler(guildID, unverifiedRoleID string, logger *slog.Logger)
 // SetJoinAskToDMRole configures the initial "Ask To DM" role ID assigned automatically on member join.
 func (h *MemberJoinHandler) SetJoinAskToDMRole(roleID string) {
 	h.joinAskToDMRoleID = strings.TrimSpace(roleID)
+}
+
+// SetHoneypotService attaches the HoneypotService so quarantined spammers who leave and rejoin
+// have their Spammer quarantine re-applied instead of receiving normal join roles.
+func (h *MemberJoinHandler) SetHoneypotService(svc *service.HoneypotService) {
+	h.honeypotSvc = svc
 }
 
 // SetLockManager attaches a UserLockManager for serializing concurrent member operations.
@@ -62,6 +70,19 @@ func (h *MemberJoinHandler) HandleGuildMemberAdd(s *discordgo.Session, m *discor
 	// Do not assign unverified roles to bot integrations
 	if m.User.Bot {
 		h.logger.Debug("ignoring bot account join", "bot_id", m.User.ID, "username", m.User.Username)
+		return
+	}
+
+	// If the member is currently in Honeypot Spammer Quarantine, re-apply the Spammer role
+	// instead of normal join roles so they cannot evade quarantine by leaving and rejoining.
+	if h.honeypotSvc != nil && h.honeypotSvc.GetActive(m.User.ID) != nil {
+		if err := h.honeypotSvc.ReapplyQuarantine(m.GuildID, m.User.ID); err != nil {
+			h.logger.Warn("failed to reapply spammer quarantine on member rejoin",
+				"guild_id", m.GuildID,
+				"user_id", m.User.ID,
+				"error", err,
+			)
+		}
 		return
 	}
 
@@ -191,6 +212,24 @@ func (h *MemberJoinHandler) SyncUnassignedMembers(s *discordgo.Session, verified
 		for _, m := range members {
 			if m.User == nil || m.User.Bot {
 				continue
+			}
+
+			if h.honeypotSvc != nil {
+				if h.honeypotSvc.GetActive(m.User.ID) != nil {
+					continue
+				}
+				if spammerRole := h.honeypotSvc.Config().SpammerRoleID; spammerRole != "" {
+					isQuarantined := false
+					for _, r := range m.Roles {
+						if r == spammerRole {
+							isQuarantined = true
+							break
+						}
+					}
+					if isQuarantined {
+						continue
+					}
+				}
 			}
 
 			hasUnverified := false

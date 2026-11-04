@@ -21,6 +21,7 @@ type Config struct {
 	AskToDMRoleID            string   // Normal "Ask To DM" Role ID on the reaction role panel (removes JoinAskToDMRoleID when claimed)
 	DMsOpenRoleID            string   // "DM's Open" Role ID on the reaction role panel (removes JoinAskToDMRoleID when claimed)
 	DMsClosedRoleID          string   // "DM's Closed" Role ID on the reaction role panel (removes JoinAskToDMRoleID when claimed)
+	SpammerRoleID            string   // Optional: Role ID assigned to users caught by the Honeypot spam trap
 	StaffRoleIDs             []string // Server Staff Role IDs (the ONLY roles able to view all general tickets & run full staff commands)
 	ServerHelperRoleIDs      []string // Server Helper Role IDs (able to view/review 18+ ID verification tickets, NOT general tickets)
 	IDCheckerRoleIDs         []string // ID Checker Role IDs (dedicated 18+ ID verification reviewers, NOT general tickets)
@@ -37,6 +38,7 @@ type Config struct {
 	TicketCategoryID         string // Optional: Category ID where ticket channels are created
 	TicketLogChannelID       string // Optional: Channel ID where ticket closures are logged
 	AnnouncementChannelID    string // Optional: Channel ID where bot update announcements are posted
+	HoneypotChannelID        string // Optional: Channel ID for the Honeypot spam trap channel
 	FiltersDir               string // Optional: Directory holding word filter JSON files (default: "./config/filters")
 	WebPort                  string // Optional: Port for web terms/privacy/health server (default: "8080")
 	WebBaseURL               string // Optional: Base public URL for terms/privacy links (default: "http://localhost:8080")
@@ -151,6 +153,7 @@ type DiscordIDs struct {
 	AskToDMRoleID       string   `json:"ask_to_dm_role_id,omitempty"`
 	DMsOpenRoleID       string   `json:"dms_open_role_id,omitempty"`
 	DMsClosedRoleID     string   `json:"dms_closed_role_id,omitempty"`
+	SpammerRoleID       string   `json:"spammer_role_id,omitempty"`
 	StaffRoleIDs        []string `json:"staff_role_ids"`
 	ServerHelperRoleIDs []string `json:"server_helper_role_ids,omitempty"`
 	IDCheckerRoleIDs    []string `json:"id_checker_role_ids,omitempty"`
@@ -159,6 +162,7 @@ type DiscordIDs struct {
 	TicketLogChannelID    string   `json:"ticket_log_channel_id"`
 	StaffAlertChannelID   string   `json:"staff_alert_channel_id"`
 	AnnouncementChannelID string   `json:"announcement_channel_id,omitempty"`
+	HoneypotChannelID     string   `json:"honeypot_channel_id,omitempty"`
 	WebBaseURL            string   `json:"web_base_url,omitempty"`
 
 	// Supports nested structure: "roles": { ... }, "channels": { ... }, "settings": { ... }
@@ -170,6 +174,7 @@ type DiscordIDs struct {
 		AskToDMRoleID       string   `json:"ask_to_dm_role_id,omitempty"`
 		DMsOpenRoleID       string   `json:"dms_open_role_id,omitempty"`
 		DMsClosedRoleID     string   `json:"dms_closed_role_id,omitempty"`
+		SpammerRoleID       string   `json:"spammer_role_id,omitempty"`
 		StaffRoleIDs        []string `json:"staff_role_ids"`
 		ServerStaffRoleIDs  []string `json:"server_staff_role_ids,omitempty"`
 		ServerHelperRoleIDs []string `json:"server_helper_role_ids,omitempty"`
@@ -183,6 +188,7 @@ type DiscordIDs struct {
 		TicketLogChannelID    string `json:"ticket_log_channel_id"`
 		StaffAlertChannelID   string `json:"staff_alert_channel_id"`
 		AnnouncementChannelID string `json:"announcement_channel_id,omitempty"`
+		HoneypotChannelID     string `json:"honeypot_channel_id,omitempty"`
 	} `json:"channels"`
 
 	Settings struct {
@@ -235,6 +241,9 @@ func LoadDiscordIDsFile(filePath string) (*DiscordIDs, error) {
 	if ids.DMsClosedRoleID == "" && ids.Roles.DMsClosedRoleID != "" {
 		ids.DMsClosedRoleID = ids.Roles.DMsClosedRoleID
 	}
+	if ids.SpammerRoleID == "" && ids.Roles.SpammerRoleID != "" {
+		ids.SpammerRoleID = ids.Roles.SpammerRoleID
+	}
 	if len(ids.StaffRoleIDs) == 0 {
 		if len(ids.Roles.ServerStaffRoleIDs) > 0 {
 			ids.StaffRoleIDs = ids.Roles.ServerStaffRoleIDs
@@ -268,6 +277,9 @@ func LoadDiscordIDsFile(filePath string) (*DiscordIDs, error) {
 	}
 	if ids.AnnouncementChannelID == "" && ids.Channels.AnnouncementChannelID != "" {
 		ids.AnnouncementChannelID = ids.Channels.AnnouncementChannelID
+	}
+	if ids.HoneypotChannelID == "" && ids.Channels.HoneypotChannelID != "" {
+		ids.HoneypotChannelID = ids.Channels.HoneypotChannelID
 	}
 	if ids.WebBaseURL == "" && ids.Settings.WebBaseURL != "" {
 		ids.WebBaseURL = ids.Settings.WebBaseURL
@@ -348,6 +360,7 @@ func Load() (*Config, error) {
 	askToDMRoleID := ""
 	dmsOpenRoleID := ""
 	dmsClosedRoleID := ""
+	spammerRoleID := ""
 	var staffRoles []string
 	var serverHelperRoles []string
 	var idCheckerRoles []string
@@ -355,6 +368,7 @@ func Load() (*Config, error) {
 	ticketLog := ""
 	staffAlertChan := ""
 	announcementChan := ""
+	honeypotChan := ""
 
 	if fileIDs != nil {
 		guildID = fileIDs.GuildID
@@ -365,6 +379,7 @@ func Load() (*Config, error) {
 		askToDMRoleID = fileIDs.AskToDMRoleID
 		dmsOpenRoleID = fileIDs.DMsOpenRoleID
 		dmsClosedRoleID = fileIDs.DMsClosedRoleID
+		spammerRoleID = fileIDs.SpammerRoleID
 		staffRoles = fileIDs.StaffRoleIDs
 		serverHelperRoles = fileIDs.ServerHelperRoleIDs
 		idCheckerRoles = fileIDs.IDCheckerRoleIDs
@@ -372,6 +387,7 @@ func Load() (*Config, error) {
 		ticketLog = fileIDs.TicketLogChannelID
 		staffAlertChan = fileIDs.StaffAlertChannelID
 		announcementChan = fileIDs.AnnouncementChannelID
+		honeypotChan = fileIDs.HoneypotChannelID
 	}
 
 	// 2. Fallback to environment variables if not populated by external IDs file
@@ -401,6 +417,12 @@ func Load() (*Config, error) {
 	}
 	if dmsClosedRoleID == "" {
 		dmsClosedRoleID = strings.TrimSpace(os.Getenv("DISCORD_DMS_CLOSED_ROLE_ID"))
+	}
+	if spammerRoleID == "" {
+		spammerRoleID = strings.TrimSpace(os.Getenv("DISCORD_SPAMMER_ROLE_ID"))
+		if spammerRoleID == "" {
+			spammerRoleID = strings.TrimSpace(os.Getenv("SPAMMER_ROLE_ID"))
+		}
 	}
 	if len(staffRoles) == 0 {
 		rawRoles := os.Getenv("DISCORD_STAFF_ROLE_IDS")
@@ -460,6 +482,12 @@ func Load() (*Config, error) {
 		announcementChan = strings.TrimSpace(os.Getenv("DISCORD_ANNOUNCEMENT_CHANNEL_ID"))
 		if announcementChan == "" {
 			announcementChan = strings.TrimSpace(os.Getenv("ANNOUNCEMENT_CHANNEL_ID"))
+		}
+	}
+	if honeypotChan == "" {
+		honeypotChan = strings.TrimSpace(os.Getenv("DISCORD_HONEYPOT_CHANNEL_ID"))
+		if honeypotChan == "" {
+			honeypotChan = strings.TrimSpace(os.Getenv("HONEYPOT_CHANNEL_ID"))
 		}
 	}
 
@@ -574,6 +602,7 @@ func Load() (*Config, error) {
 		AskToDMRoleID:            askToDMRoleID,
 		DMsOpenRoleID:            dmsOpenRoleID,
 		DMsClosedRoleID:          dmsClosedRoleID,
+		SpammerRoleID:            spammerRoleID,
 		StaffRoleIDs:             staffRoles,
 		ServerHelperRoleIDs:      serverHelperRoles,
 		IDCheckerRoleIDs:         idCheckerRoles,
@@ -590,6 +619,7 @@ func Load() (*Config, error) {
 		TicketCategoryID:         ticketCat,
 		TicketLogChannelID:       ticketLog,
 		AnnouncementChannelID:    announcementChan,
+		HoneypotChannelID:        honeypotChan,
 		FiltersDir:               filtersDir,
 		WebPort:                  webPort,
 		WebBaseURL:               webBaseURL,

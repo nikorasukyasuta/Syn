@@ -10,7 +10,8 @@
     "dms_closed_role_id": "1560518482645360681",
     "staff_role_ids": ["1560132655180161076","1560515707958202389"],
     "server_helper_role_ids": ["1562245199760203998"],
-    "id_checker_role_ids": []
+    "id_checker_role_ids": [],
+    "spammer_role_id": "1567445096767430726"
   },
   "channels": {
     "ticket_category_id": "1562256127197057094",
