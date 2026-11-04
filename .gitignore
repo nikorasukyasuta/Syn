@@ -53,3 +53,7 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 
+# Metrics
+logs/metrics.jsonl
+logs/metrics.jsonl.*
+
