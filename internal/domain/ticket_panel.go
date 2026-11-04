@@ -91,7 +91,8 @@ func DefaultTicketPanelPost(guildID string, panelType TicketPanelType) *TicketPa
 			Description: "To access 18+ verified and mature community channels, complete our private age verification flow:\n\n" +
 				"**How It Works:**\n" +
 				"1. Click **Start 18+ ID Verification** below to open a private channel visible only to you and Server Staff.\n" +
-				"2. Upload **one clear photo** showing your government-issued ID (**DOB visible**, all other personal details covered/blurred) next to a **handwritten physical note** with your Discord username and today's date.\n" +
+				"2. Upload **clear photo(s)** showing your government-issued ID (**DOB visible**, all other personal details covered/blurred) next to a **handwritten physical note** with your Discord username and today's date\n" +
+				" and a selfie of you holding your government-issued ID\n" +
 				"3. Once approved by Staff, you receive the **18+ Verified** role and the verification channel is **permanently deleted**.",
 			Color:        0x5865F2, // Blurple
 			ButtonLabel:  "Start 18+ ID Verification",
@@ -184,4 +185,3 @@ type TicketPanelRepository interface {
 	ListPanelPosts(ctx context.Context, guildID string) ([]*TicketPanelPost, error)
 	SavePanelPost(ctx context.Context, post *TicketPanelPost) error
 }
-

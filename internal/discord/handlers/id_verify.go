@@ -774,12 +774,13 @@ func (h *IDVerifyHandler) sendVerificationChannelWelcome(
 	embed := &discordgo.MessageEmbed{
 		Title: "🪪 18+ Age & ID Verification Session",
 		Description: fmt.Sprintf(
-			"Welcome <@%s>!\n\nTo complete **18+ Age Verification**, please upload **one clear photo** below containing:\n\n"+
+			"Welcome <@%s>!\n\nTo complete **18+ Age Verification**, please upload **clear photo(s)** below containing:\n\n"+
 				"1️⃣ **Government-Issued Photo ID** showing your **Date of Birth (DOB)** clearly.\n"+
 				"   • *For your privacy, please blur or cover your full name, address, photo, and ID number — we only need to verify your DOB.*\n"+
 				"2️⃣ **A Handwritten Physical Note** placed next to your ID showing:\n"+
 				"   • Your **Discord Username**\n"+
 				"   • **Today's Date**\n\n"+
+				"3️⃣ **A Selfie of You Holding Your Government-Issued ID**\n"+
 				"🔒 **Privacy Guarantee:** Only Server Staff, Server Helpers, and ID Reviewers can view this channel. As soon as your review is approved or closed, **this channel and your uploaded photo are permanently deleted**.",
 			userID,
 		),
