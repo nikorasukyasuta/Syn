@@ -2,7 +2,7 @@
   "guild_id": "1560121676212207627",
   "roles": {
     "verified_role_id": "1562244769931989022",
-    "id_verified_role_id": "1562244769931989023",
+    "id_verified_role_id": "1564386244765679706",
     "unverified_role_id": "1562244680559886476",
     "join_ask_to_dm_role_id": "1567140451176288266",
     "ask_to_dm_role_id": "1560518344942035084",
@@ -10,13 +10,15 @@
     "dms_closed_role_id": "1560518482645360681",
     "staff_role_ids": ["1560132655180161076","1560515707958202389"],
     "server_helper_role_ids": ["1562245199760203998"],
-    "id_checker_role_ids": []
+    "id_checker_role_ids": [],
+    "spammer_role_id": "1567445096767430726"
   },
   "channels": {
     "ticket_category_id": "1562256127197057094",
     "ticket_log_channel_id": "1562599674060472390",
     "staff_alert_channel_id": "1562682670549438486",
-    "announcement_channel_id": "1560208751699435620"
+    "announcement_channel_id": "1560208751699435620",
+    "honeypot_channel_id": "1567456992287531128"
   },
   "settings": {
     "safeword_emoji": "🛑",

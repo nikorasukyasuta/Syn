@@ -35,6 +35,7 @@ type Bot struct {
 	idVerifyHandler   *handlers.IDVerifyHandler
 	templateHandler   *handlers.TemplateHandler
 	spoilerTTLHandler *handlers.SpoilerTTLHandler
+	honeypotHandler   *handlers.HoneypotHandler
 	cmdQueue          *queue.CommandQueue
 	lockMgr         *syncutil.UserLockManager
 	rateLimiter     *ratelimit.UserRateLimiter
@@ -260,6 +261,24 @@ func (b *Bot) SetSpoilerTTLHandler(h *handlers.SpoilerTTLHandler) {
 			wrapped,
 		)
 		b.routes["spoiler-ttl"] = wrapped
+		b.session.AddHandler(h.HandleMessageCreate)
+	}
+}
+
+// SetHoneypotHandler registers the Staff-only /honeypot and /unquarantine commands,
+// the Honeypot channel message listener, and the staff alert release button handler.
+func (b *Bot) SetHoneypotHandler(h *handlers.HoneypotHandler) {
+	b.honeypotHandler = h
+	if h != nil {
+		h.AttachSession(b.session)
+		b.RegisterCommand(
+			handlers.HoneypotCommandDefinition(),
+			b.wrapHandler(h.HandleHoneypotCommand, true, false),
+		)
+		b.RegisterCommand(
+			handlers.UnquarantineCommandDefinition(),
+			b.wrapHandler(h.HandleUnquarantineCommand, true, false),
+		)
 		b.session.AddHandler(h.HandleMessageCreate)
 	}
 }
@@ -546,6 +565,18 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 			"component_type", compData.ComponentType,
 		)
 
+		if b.versionHandler != nil && b.versionHandler.HandleComponentInteraction(s, i) {
+			break
+		}
+
+		if b.spoilerTTLHandler != nil && b.spoilerTTLHandler.HandleComponentInteraction(s, i) {
+			break
+		}
+
+		if b.honeypotHandler != nil && b.honeypotHandler.HandleComponentInteraction(s, i) {
+			break
+		}
+
 		// Guard button clicks from rapid user spam to prevent dropped responses
 		if userID != "" && b.rateLimiter != nil && !b.isStaffMember(i) {
 			if allowed, wait := b.rateLimiter.Allow(userID); !allowed {
@@ -561,14 +592,6 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 				respondForbidden(s, i, fmt.Sprintf("⏱️ **Slow down!** You are clicking buttons too quickly. Please wait %d second(s).", waitSec))
 				break
 			}
-		}
-
-		if b.versionHandler != nil && b.versionHandler.HandleComponentInteraction(s, i) {
-			break
-		}
-
-		if b.spoilerTTLHandler != nil && b.spoilerTTLHandler.HandleComponentInteraction(s, i) {
-			break
 		}
 
 		if b.filterHandler != nil && b.filterHandler.HandleComponentInteraction(s, i) {

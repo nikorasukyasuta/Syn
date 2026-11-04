@@ -22,6 +22,7 @@ type SpoilerTTLService struct {
 
 	mu       sync.RWMutex
 	userTTLs map[string]time.Duration // "guildID:userID" -> duration
+	timers   map[string]*time.Timer   // messageID -> active deletion timer
 }
 
 // NewSpoilerTTLService constructs a new SpoilerTTLService.
@@ -35,6 +36,7 @@ func NewSpoilerTTLService(
 		flashSvc: flashSvc,
 		logger:   logger,
 		userTTLs: make(map[string]time.Duration),
+		timers:   make(map[string]*time.Timer),
 	}
 }
 
@@ -163,7 +165,40 @@ func (s *SpoilerTTLService) Init(ctx context.Context, session *discordgo.Session
 		}
 	}
 
+	// 3. Background sweeper ticker to guarantee expired spoiler messages are deleted
+	if session != nil {
+		go s.runExpiredSweeper(ctx, session)
+	}
+
 	return nil
+}
+
+func (s *SpoilerTTLService) runExpiredSweeper(ctx context.Context, session *discordgo.Session) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if s.repo == nil {
+				continue
+			}
+			sweepCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			expired, err := s.repo.ListExpiredMessages(sweepCtx, time.Now().UTC())
+			cancel()
+			if err != nil {
+				continue
+			}
+			for _, msg := range expired {
+				if msg == nil {
+					continue
+				}
+				s.executeMessageDelete(session, msg.ChannelID, msg.MessageID)
+			}
+		}
+	}
 }
 
 // SetUserTTL saves and caches a standard user's personal spoilered photo TTL preference.
@@ -185,15 +220,23 @@ func (s *SpoilerTTLService) SetUserTTLWithAdmin(ctx context.Context, guildID, us
 		UpdatedAt:   time.Now().UTC(),
 	}
 
-	if s.repo != nil {
-		if err := s.repo.SaveUserSetting(ctx, setting); err != nil {
-			return err
-		}
-	}
-
+	// Always update the in-memory map immediately so user TTL works even if DB persistence has transient errors
 	s.mu.Lock()
 	s.userTTLs[userTTLKey(guildID, userID)] = d
+	s.userTTLs[userTTLKey("", userID)] = d
 	s.mu.Unlock()
+
+	if s.repo != nil {
+		if err := s.repo.SaveUserSetting(ctx, setting); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("failed to persist user spoiler ttl setting to database; keeping in-memory setting",
+					"guild_id", guildID,
+					"user_id", userID,
+					"error", err,
+				)
+			}
+		}
+	}
 
 	if s.logger != nil {
 		s.logger.Info("configured user spoiler photo ttl",
@@ -207,15 +250,22 @@ func (s *SpoilerTTLService) SetUserTTLWithAdmin(ctx context.Context, guildID, us
 
 // DisableUserTTL removes a user's personal spoilered photo TTL preference.
 func (s *SpoilerTTLService) DisableUserTTL(ctx context.Context, guildID, userID string) error {
+	s.mu.Lock()
+	delete(s.userTTLs, userTTLKey(guildID, userID))
+	delete(s.userTTLs, userTTLKey("", userID))
+	suffix := ":" + userID
+	for k := range s.userTTLs {
+		if strings.HasSuffix(k, suffix) {
+			delete(s.userTTLs, k)
+		}
+	}
+	s.mu.Unlock()
+
 	if s.repo != nil {
 		if err := s.repo.DeleteUserSetting(ctx, guildID, userID); err != nil {
 			return err
 		}
 	}
-
-	s.mu.Lock()
-	delete(s.userTTLs, userTTLKey(guildID, userID))
-	s.mu.Unlock()
 
 	if s.logger != nil {
 		s.logger.Info("disabled user spoiler photo ttl", "guild_id", guildID, "user_id", userID)
@@ -225,8 +275,22 @@ func (s *SpoilerTTLService) DisableUserTTL(ctx context.Context, guildID, userID 
 
 // GetUserTTL returns the configured spoilered photo TTL for a user, if any.
 func (s *SpoilerTTLService) GetUserTTL(guildID, userID string) (time.Duration, bool) {
+	if userID == "" {
+		return 0, false
+	}
+
 	s.mu.RLock()
 	d, ok := s.userTTLs[userTTLKey(guildID, userID)]
+	if (!ok || d <= 0) && userID != "" {
+		suffix := ":" + userID
+		for k, val := range s.userTTLs {
+			if strings.HasSuffix(k, suffix) && val > 0 {
+				d = val
+				ok = true
+				break
+			}
+		}
+	}
 	s.mu.RUnlock()
 	if ok && d > 0 {
 		return d, true
@@ -255,6 +319,14 @@ func (s *SpoilerTTLService) IsFlashDashChannel(channelID string) bool {
 	return s.flashSvc.IsFlashDashChannel(channelID)
 }
 
+// GetFlashDashChannelDuration returns the Flash and Dash channel timer if the channel is configured for Flash and Dash.
+func (s *SpoilerTTLService) GetFlashDashChannelDuration(channelID string) (time.Duration, bool) {
+	if s.flashSvc == nil {
+		return 0, false
+	}
+	return s.flashSvc.GetChannelDuration(channelID)
+}
+
 // ScheduleSpoilerMessageDeletion registers a spoilered photo message for auto-deletion in DB and starts a timer.
 func (s *SpoilerTTLService) ScheduleSpoilerMessageDeletion(
 	session *discordgo.Session,
@@ -265,27 +337,72 @@ func (s *SpoilerTTLService) ScheduleSpoilerMessageDeletion(
 
 	if s.repo != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = s.repo.SavePendingMessage(ctx, &domain.UserSpoilerMessage{
+		if err := s.repo.SavePendingMessage(ctx, &domain.UserSpoilerMessage{
 			GuildID:   guildID,
 			ChannelID: channelID,
 			MessageID: messageID,
 			UserID:    userID,
 			DeleteAt:  deleteAt,
-		})
+		}); err != nil && s.logger != nil {
+			s.logger.Warn("failed to persist pending spoiler message to database",
+				"channel_id", channelID,
+				"message_id", messageID,
+				"user_id", userID,
+				"error", err,
+			)
+		}
 		cancel()
 	}
 
-	time.AfterFunc(d, func() {
+	if s.logger != nil {
+		s.logger.Info("scheduled spoiler photo message for auto-deletion",
+			"guild_id", guildID,
+			"channel_id", channelID,
+			"message_id", messageID,
+			"user_id", userID,
+			"ttl", d.String(),
+			"delete_at", deleteAt.Format(time.RFC3339),
+		)
+	}
+
+	s.mu.Lock()
+	if existing, exists := s.timers[messageID]; exists && existing != nil {
+		existing.Stop()
+	}
+	s.timers[messageID] = time.AfterFunc(d, func() {
+		s.mu.Lock()
+		delete(s.timers, messageID)
+		s.mu.Unlock()
 		s.executeMessageDelete(session, channelID, messageID)
 	})
+	s.mu.Unlock()
 }
 
 func (s *SpoilerTTLService) executeMessageDelete(session *discordgo.Session, channelID, messageID string) {
 	if session != nil {
 		if err := session.ChannelMessageDelete(channelID, messageID); err != nil {
 			if s.logger != nil {
-				s.logger.Debug("user spoiler message delete attempt", "channel_id", channelID, "message_id", messageID, "error", err)
+				s.logger.Warn("user spoiler message delete attempt failed",
+					"channel_id", channelID,
+					"message_id", messageID,
+					"error", err,
+				)
 			}
+			// Retry once after a brief delay if it was not an "Unknown Message" (already deleted) error
+			if !strings.Contains(err.Error(), "10008") && !strings.Contains(strings.ToLower(err.Error()), "unknown message") {
+				time.Sleep(1500 * time.Millisecond)
+				if retryErr := session.ChannelMessageDelete(channelID, messageID); retryErr == nil && s.logger != nil {
+					s.logger.Info("auto-deleted spoiler photo message on retry",
+						"channel_id", channelID,
+						"message_id", messageID,
+					)
+				}
+			}
+		} else if s.logger != nil {
+			s.logger.Info("auto-deleted spoiler photo message",
+				"channel_id", channelID,
+				"message_id", messageID,
+			)
 		}
 	}
 

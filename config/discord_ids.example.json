@@ -8,6 +8,7 @@
     "ask_to_dm_role_id": "556677889900112233",
     "dms_open_role_id": "667788990011223344",
     "dms_closed_role_id": "778899001122334455",
+    "spammer_role_id": "",
     "staff_role_ids": [
       "111111111111111111"
     ],
@@ -21,7 +22,9 @@
   "channels": {
     "ticket_category_id": "",
     "ticket_log_channel_id": "",
-    "staff_alert_channel_id": ""
+    "staff_alert_channel_id": "",
+    "announcement_channel_id": "1560208751699435620",
+    "honeypot_channel_id": ""
   },
   "settings": {
     "safeword_emoji": "🛑",

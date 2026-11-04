@@ -772,16 +772,24 @@ func (h *IDVerifyHandler) sendVerificationChannelWelcome(
 	reviewerRoleIDs []string,
 ) {
 	embed := &discordgo.MessageEmbed{
-		Title: "🪪 18+ Age & ID Verification Session",
+		Title: "🪪  18+ Age & ID Verification Session",
 		Description: fmt.Sprintf(
-			"Welcome <@%s>!\n\nTo complete **18+ Age Verification**, please upload **one clear photo** below containing:\n\n"+
-				"1️⃣ **Government-Issued Photo ID** showing your **Date of Birth (DOB)** clearly.\n"+
-				"   • *For your privacy, please blur or cover your full name, address, photo, and ID number — we only need to verify your DOB.*\n"+
-				"2️⃣ **A Handwritten Physical Note** placed next to your ID showing:\n"+
-				"   • Your **Discord Username**\n"+
-				"   • **Today's Date**\n\n"+
-				"🔒 **Privacy Guarantee:** Only Server Staff, Server Helpers, and ID Reviewers can view this channel. As soon as your review is approved or closed, **this channel and your uploaded photo are permanently deleted**.",
-			userID,
+			"Welcome <@%s>!\n\n"+
+				"To complete your **18+ Age Verification** and unlock adult community channels, please upload **clear photo(s)** containing:\n\n"+
+				"1️⃣ **Government-Issued Photo ID**\n"+
+				"   • Your **Date of Birth (DOB)** must be fully legible.\n"+
+				"   • *For your privacy, feel free to blur or cover your full name, home address, document number, and portrait photo — we only verify your DOB.*\n\n"+
+				"2️⃣ **Physical Handwritten Note**\n"+
+				"   • A real paper note placed next to your ID displaying:\n"+
+				"     ↳ Your Discord Username (`<@%s>`)\n"+
+				"     ↳ Today's Date\n\n"+
+				"3️⃣ **Selfie with ID**\n"+
+				"   • A clear photo of you holding your physical government-issued ID next to your face.\n\n"+
+				"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+				"🔒 **Zero Data Retention Guarantee**\n"+
+				"This channel is strictly isolated to you and authorized reviewers. Once approved or closed, **this channel and all uploaded images are permanently deleted**."+
+				"If you wish to ID verify with a specific reviewer for comfort, please inform us and we will do our best to ensure your request is honored.",
+			userID, userID,
 		),
 		Color: 0x5865F2,
 		Fields: []*discordgo.MessageEmbedField{
@@ -792,17 +800,17 @@ func (h *IDVerifyHandler) sendVerificationChannelWelcome(
 			},
 			{
 				Name:   "Status",
-				Value:  "🟡 Pending ID Review",
+				Value:  "🟡 Pending Review",
 				Inline: true,
 			},
 			{
-				Name:   "Reviewer Controls",
-				Value:  "Server Staff, Helpers & ID Reviewers: use the buttons below or `/id-verify approve` / `/id-verify deny`.",
+				Name:   "Reviewer Actions",
+				Value:  "Authorized reviewers: click **Approve** or **Deny** below to conclude the session.",
 				Inline: false,
 			},
 		},
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: "Syn Security Suite • 18+ ID Verification",
+			Text: "Syn Security Suite • 18+ ID Verification • Zero Image Retention",
 		},
 		Timestamp: req.CreatedAt.Format(time.RFC3339),
 	}
@@ -845,12 +853,14 @@ func (h *IDVerifyHandler) sendVerificationChannelWelcome(
 // BuildIDVerifyPanelEmbed generates the persistent 18+ ID Verification panel embed.
 func BuildIDVerifyPanelEmbed() *discordgo.MessageEmbed {
 	return &discordgo.MessageEmbed{
-		Title: "🪪 18+ Age & ID Verification",
-		Description: "This community requires **18+ Age Verification** to access adult and verified channels.\n\n" +
-			"**How It Works:**\n" +
-			"1. Click the **Start 18+ ID Verification** button below to open an isolated, private channel with Server Staff.\n" +
-			"2. Upload a photo of your government-issued ID (**DOB visible**, all other sensitive info redacted/covered) alongside a **handwritten note** with your Discord username and today's date.\n" +
-			"3. Once a staff member verifies your age, you will receive the **18+ Verified** role and the verification channel will be **permanently deleted**.",
+		Title: "🪪  18+ Age & ID Verification",
+		Description: "Welcome! This server hosts adult community spaces that require **18+ Age Verification**.\n\n" +
+			"**Verification Requirements:**\n" +
+			"• **Government-Issued Photo ID** *(DOB visible; name, address, and document # can be blurred)*\n" +
+			"• **Handwritten Note** with your Discord username & today's date next to your ID\n" +
+			"• **Selfie with ID** holding your physical government-issued ID\n\n" +
+			"**Privacy Assurance:**\n" +
+			"Your submission is conducted in a private channel visible only to you and authorized staff. Upon review, **all images and the channel are permanently deleted**.",
 		Color: 0x5865F2,
 		Footer: &discordgo.MessageEmbedFooter{
 			Text: "Syn Security Suite • Zero ID Image Retention",

@@ -181,10 +181,18 @@ func (h *TicketHandler) executeTicketClose(
 
 	// 1. Send closing message in the ticket channel
 	closeEmbed := &discordgo.MessageEmbed{
-		Title:       "🔒 Ticket Closed",
-		Description: fmt.Sprintf("This ticket was closed by <@%s>.\n\n**Resolution:** %s\n\n*This channel will be archived and deleted in 5 seconds.*", callerID, closedTicket.Resolution),
-		Color:       0xE74C3C, // Red
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		Title: "🔒  Ticket Closed",
+		Description: fmt.Sprintf(
+			"This ticket has been marked as resolved and closed by <@%s>.\n\n"+
+				"**Resolution:** `%s`\n\n"+
+				"⏱️ *This channel will be archived and deleted in 5 seconds.*",
+			callerID, closedTicket.Resolution,
+		),
+		Color:     0xED4245, // Coral Red
+		Footer: &discordgo.MessageEmbedFooter{
+			Text: "Syn Support Suite • Ticket Archival",
+		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
 
 	if i.Type == discordgo.InteractionModalSubmit {
@@ -224,12 +232,12 @@ func (h *TicketHandler) logTicketClosure(s *discordgo.Session, t *domain.Ticket,
 	}
 
 	logEmbed := &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("📋 Ticket Closed: %s", t.Type.DisplayName()),
-		Description: fmt.Sprintf("Ticket channel `<#%s>` (`%s`) was resolved and closed.", t.ChannelID, t.ChannelID),
-		Color:       0xE67E22, // Orange
+		Title:       fmt.Sprintf("📋  Ticket Closed: %s", t.Type.DisplayName()),
+		Description: fmt.Sprintf("Ticket channel `<#%s>` (`%s`) has been resolved and closed.", t.ChannelID, t.ChannelID),
+		Color:       0x5865F2, // Blurple
 		Fields: []*discordgo.MessageEmbedField{
 			{
-				Name:   "Ticket Type",
+				Name:   "Ticket Category",
 				Value:  fmt.Sprintf("%s %s", t.Type.Emoji(), t.Type.DisplayName()),
 				Inline: true,
 			},
@@ -244,13 +252,13 @@ func (h *TicketHandler) logTicketClosure(s *discordgo.Session, t *domain.Ticket,
 				Inline: true,
 			},
 			{
-				Name:   "Resolution",
-				Value:  t.Resolution,
+				Name:   "Resolution Summary",
+				Value:  fmt.Sprintf("`%s`", t.Resolution),
 				Inline: false,
 			},
 			{
 				Name:   "Open Duration",
-				Value:  duration,
+				Value:  fmt.Sprintf("`%s`", duration),
 				Inline: true,
 			},
 			{
@@ -260,7 +268,7 @@ func (h *TicketHandler) logTicketClosure(s *discordgo.Session, t *domain.Ticket,
 			},
 		},
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: fmt.Sprintf("Ticket ID: %s", t.ID),
+			Text: fmt.Sprintf("Syn Support Suite • Ticket ID: %s", t.ID),
 		},
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -419,16 +427,17 @@ func (h *TicketHandler) sendTicketWelcomeMessage(
 	initialReason string,
 ) {
 	embed := &discordgo.MessageEmbed{
-		Title: fmt.Sprintf("%s %s", ticket.Type.Emoji(), ticket.Type.DisplayName()),
+		Title: fmt.Sprintf("%s  %s Session", ticket.Type.Emoji(), ticket.Type.DisplayName()),
 		Description: fmt.Sprintf(
-			"Welcome <@%s>!\n\nOur server staff team has been notified and will assist you shortly. "+
-				"Please describe your request, issue, or evidence in detail below.",
+			"Welcome <@%s>!\n\n"+
+				"Our server team has been notified and will assist you shortly.\n"+
+				"Please share your question, details, or any relevant links or screenshots below.",
 			creatorID,
 		),
 		Color: 0x5865F2,
 		Fields: []*discordgo.MessageEmbedField{
 			{
-				Name:   "Ticket Type",
+				Name:   "Ticket Category",
 				Value:  fmt.Sprintf("%s %s", ticket.Type.Emoji(), ticket.Type.DisplayName()),
 				Inline: true,
 			},
@@ -439,19 +448,19 @@ func (h *TicketHandler) sendTicketWelcomeMessage(
 			},
 			{
 				Name:   "Status",
-				Value:  "🟢 Open",
+				Value:  "🟢 Open & Active",
 				Inline: true,
 			},
 		},
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: "Click the Close Ticket button below when finished.",
+			Text: "Syn Support Suite • Click Close Ticket below when resolved",
 		},
 		Timestamp: ticket.CreatedAt.Format(time.RFC3339),
 	}
 
 	if initialReason != "" {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-			Name:   "Initial Notes",
+			Name:   "Initial Subject / Notes",
 			Value:  initialReason,
 			Inline: false,
 		})

@@ -124,7 +124,7 @@ func main() {
 
 	rrRepo := postgres.NewReactionRoleRepo(dbPool)
 	rrSvc := service.NewReactionRoleService(rrRepo, verifyRepo, auditRepo, assetStore, cfg.TicketStaffRoleIDs(), cfg.VerifiedRoleID, logger)
-	rrSvc.AddProtectedRoles(cfg.IDVerifiedRoleID, cfg.UnverifiedRoleID)
+	rrSvc.AddProtectedRoles(cfg.IDVerifiedRoleID, cfg.UnverifiedRoleID, cfg.SpammerRoleID)
 	rrHandler := handlers.NewReactionRoleHandler(rrSvc, logger)
 	rrHandler.SetLockManager(lockMgr)
 	rrHandler.SetDMRoles(cfg.JoinAskToDMRoleID, cfg.AskToDMRoleID, cfg.DMsOpenRoleID, cfg.DMsClosedRoleID)
@@ -187,6 +187,7 @@ func main() {
 	spoilerTTLRepo := postgres.NewSpoilerTTLRepo(dbPool)
 	spoilerTTLSvc := service.NewSpoilerTTLService(spoilerTTLRepo, flashSvc, logger)
 	spoilerTTLHandler := handlers.NewSpoilerTTLHandler(spoilerTTLSvc, cfg, logger)
+	flashHandler.SetSpoilerTTLService(spoilerTTLSvc)
 
 	// Legal and Privacy Command Handlers
 	legalHandler := handlers.NewLegalHandler(cfg)
@@ -199,6 +200,12 @@ func main() {
 	// Administrator-Only Server Template Export & Development Server Apply Suite
 	templateSvc := service.NewServerTemplateService(logger)
 	templateHandler := handlers.NewTemplateHandler(templateSvc, cfg, resCache, logger)
+
+	// Honeypot Spam-Trap Channel & 3-Day Spammer Quarantine System
+	honeypotRepo := postgres.NewHoneypotRepo(dbPool)
+	honeypotSvc := service.NewHoneypotService(honeypotRepo, auditRepo, logger)
+	honeypotHandler := handlers.NewHoneypotHandler(honeypotSvc, cfg, resCache, lockMgr, logger)
+	memberHandler.SetHoneypotService(honeypotSvc)
 
 	// Public Web Server for Terms, Privacy Policy, Health, and Time-Series Metrics
 	webServer := web.NewServer(cfg.WebPort, logger)
@@ -235,6 +242,12 @@ func main() {
 	bot.SetIDVerifyHandler(idVerifyHandler)
 	bot.SetTemplateHandler(templateHandler)
 	bot.SetSpoilerTTLHandler(spoilerTTLHandler)
+	bot.SetHoneypotHandler(honeypotHandler)
+
+	// Initialize Honeypot Spam-Trap service before Start so active quarantines are loaded prior to member sweep
+	if err := honeypotSvc.Init(ctx, bot.Session(), cfg.GuildID, cfg.HoneypotChannelID, cfg.SpammerRoleID); err != nil {
+		logger.Warn("failed to initialize honeypot service", "error", err)
+	}
 
 	// 5. Start the Bot
 	if err := bot.Start(); err != nil {
@@ -277,6 +290,18 @@ func main() {
 			logger.Info("posted bot update announcement to announcement channel", "channel_id", chID)
 		} else {
 			logger.Info("bot update announcement for current version already present", "channel_id", chID)
+		}
+	}()
+
+	// Automatically provision or sync the Honeypot spam-trap channel, Spammer role, and blatant warning notice.
+	go func() {
+		hpCtx, hpCancel := context.WithTimeout(ctx, 20*time.Second)
+		defer hpCancel()
+		if chID, roleID, _, err := honeypotHandler.EnsureHoneypot(hpCtx, bot.Session(), cfg.GuildID, ""); err != nil {
+			logger.Warn("failed to auto-sync honeypot spam trap on startup", "error", err)
+		} else {
+			rrSvc.AddProtectedRoles(roleID)
+			logger.Info("honeypot spam trap synchronized", "channel_id", chID, "spammer_role_id", roleID)
 		}
 	}()
 

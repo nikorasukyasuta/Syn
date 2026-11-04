@@ -7,9 +7,9 @@ import (
 
 // Current version and source repository constants.
 const (
-	CurrentVersion   = "v1.2.4"
+	CurrentVersion   = "v1.3.0"
 	GitRepositoryURL = "https://github.com/nikorasukyasuta/Syn"
-	ReleaseDate      = "2026-11-03"
+	ReleaseDate      = "2026-11-04"
 )
 
 // Release represents a version milestone with date and feature highlights.
@@ -21,6 +21,19 @@ type Release struct {
 
 // History contains the chronological release log for the Syn bot.
 var History = []Release{
+	{
+		Version: "v1.3.0",
+		Date:    "2026-11-04",
+		Changes: []string{
+			"Automated Honeypot spam-trap channel (#⛔-do-not-type-here) with blatant warning notices to catch automated spam bots",
+			"Immediate Spammer quarantine stripping existing roles, assigning Spammer role, and purging recent spam messages sent in the last 5 minutes across the server",
+			"3-Day (72-hour) auto-kick timer backed by Database that survives restarts and kicks unreleased quarantined accounts",
+			"Staff release controls (/unquarantine, /honeypot release, /honeypot list, /honeypot status) and interactive one-click release button on staff alerts",
+			"Integrated personal /privacy-mode deletion timers with Flash & Dash photo channels, still not active yet, discussion needs to take place",
+			"Added Discord API v10 IS_SPOILER attachment flag detection and retroactive scheduling for recently sent spoilered photos",
+			"Elevated ticket aesthetics and copy across all 5 ticket creation flows with updated multi-photo 18+ ID verification guidelines (Government ID, Handwritten Note, Selfie with ID)",
+		},
+	},
 	{
 		Version: "v1.2.4",
 		Date:    "2026-11-03",

@@ -150,7 +150,25 @@ func (h *SpoilerTTLHandler) HandleSpoilerTTLCommand(s *discordgo.Session, i *dis
 	isAdmin := h.isCallerAdmin(s, i)
 	h.setDraft(guildID, userID, draft)
 
-	embed, components := h.buildPromptView(guildID, userID, draft, isAdmin, "")
+	var statusNotice string
+	if len(opts) > 0 {
+		selectedDur := draft.Duration()
+		if err := service.ValidateSpoilerTTLForUser(selectedDur, isAdmin); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if saveErr := h.svc.SetUserTTLWithAdmin(ctx, guildID, userID, selectedDur, isAdmin); saveErr == nil {
+				statusNotice = fmt.Sprintf("✅ **Saved!** All spoilered photos you post will automatically be deleted after **%s**.", service.FormatSpoilerTTL(selectedDur))
+				go h.scheduleRecentUserSpoilerMessages(s, guildID, i.ChannelID, userID, selectedDur)
+			}
+			cancel()
+		} else {
+			statusNotice = "⚠️ " + err.Error() + ". Please adjust the dropdowns before confirming."
+		}
+	}
+
+	embed, components := h.buildPromptView(guildID, userID, draft, isAdmin, statusNotice)
+	if len(opts) > 0 && strings.HasPrefix(statusNotice, "✅") {
+		embed.Color = 0x22C55E
+	}
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
@@ -216,8 +234,16 @@ func (h *SpoilerTTLHandler) handleDropdownChange(s *discordgo.Session, i *discor
 
 	isAdmin := h.isCallerAdmin(s, i)
 	var notice string
-	if err := service.ValidateSpoilerTTLForUser(draft.Duration(), isAdmin); err != nil {
+	selectedDur := draft.Duration()
+	if err := service.ValidateSpoilerTTLForUser(selectedDur, isAdmin); err != nil {
 		notice = "⚠️ " + err.Error() + ". Please adjust the dropdowns before confirming."
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if saveErr := h.svc.SetUserTTLWithAdmin(ctx, guildID, userID, selectedDur, isAdmin); saveErr == nil {
+			notice = fmt.Sprintf("✅ **Saved!** Your spoilered photo auto-delete timer is now set to **%s** (or click Confirm below).", service.FormatSpoilerTTL(selectedDur))
+			go h.scheduleRecentUserSpoilerMessages(s, guildID, i.ChannelID, userID, selectedDur)
+		}
+		cancel()
 	}
 
 	embed, components := h.buildPromptView(guildID, userID, draft, isAdmin, notice)
@@ -267,6 +293,8 @@ func (h *SpoilerTTLHandler) handleConfirmButton(s *discordgo.Session, i *discord
 		h.respondEphemeralError(s, i, fmt.Sprintf("Failed to save your spoilered photo time limit: %v", err))
 		return
 	}
+
+	go h.scheduleRecentUserSpoilerMessages(s, guildID, i.ChannelID, userID, selectedDuration)
 
 	confirmMsg := fmt.Sprintf("✅ **Confirmed!** All spoilered photos you post will automatically be deleted after **%s**.", service.FormatSpoilerTTL(selectedDuration))
 	embed, components := h.buildPromptView(guildID, userID, draft, isAdmin, confirmMsg)
@@ -478,16 +506,7 @@ func (h *SpoilerTTLHandler) HandleMessageCreate(s *discordgo.Session, m *discord
 		return
 	}
 
-	if h.cfg != nil && h.cfg.GuildID != "" && m.GuildID != "" && m.GuildID != h.cfg.GuildID {
-		return
-	}
-
-	// Skip Flash and Dash channels since they have their own dedicated 30-minute timer.
-	if h.svc.IsFlashDashChannel(m.ChannelID) {
-		return
-	}
-
-	if !HasSpoilerPhotoAttachment(m.Attachments) {
+	if !HasSpoilerPhotoMessage(m.Message) {
 		return
 	}
 
@@ -501,15 +520,72 @@ func (h *SpoilerTTLHandler) HandleMessageCreate(s *discordgo.Session, m *discord
 		return
 	}
 
+	// If this is a Flash and Dash channel, only skip if the channel's Flash and Dash timer
+	// is already shorter than or equal to the user's personal privacy-mode TTL.
+	if flashDur, isFlash := h.svc.GetFlashDashChannelDuration(m.ChannelID); isFlash && flashDur > 0 && ttl >= flashDur {
+		return
+	}
+
 	h.svc.ScheduleSpoilerMessageDeletion(s, guildID, m.ChannelID, m.ID, m.Author.ID, ttl)
+}
+
+// scheduleRecentUserSpoilerMessages scans the last 25 messages in channelID and schedules any
+// spoilered photos authored by userID so that photos posted right before confirming /privacy-mode
+// are also automatically deleted.
+func (h *SpoilerTTLHandler) scheduleRecentUserSpoilerMessages(
+	s *discordgo.Session,
+	guildID, channelID, userID string,
+	d time.Duration,
+) {
+	if s == nil || channelID == "" || userID == "" || d < domain.MinAdminSpoilerPhotoTTL {
+		return
+	}
+
+	msgs, err := s.ChannelMessages(channelID, 25, "", "", "")
+	if err != nil {
+		return
+	}
+
+	now := time.Now().UTC()
+	for _, msg := range msgs {
+		if msg == nil || msg.Author == nil || msg.Author.ID != userID {
+			continue
+		}
+		if !HasSpoilerPhotoMessage(msg) {
+			continue
+		}
+		remaining := d
+		if !msg.Timestamp.IsZero() && msg.Timestamp.Before(now) {
+			elapsed := now.Sub(msg.Timestamp.UTC())
+			// Only retroactively schedule recent messages posted within the last 14 days
+			if elapsed > domain.MaxSpoilerPhotoTTL {
+				continue
+			}
+			if elapsed < d {
+				remaining = d - elapsed
+			} else if elapsed <= 15*time.Minute {
+				remaining = 3 * time.Second
+			}
+		}
+		h.svc.ScheduleSpoilerMessageDeletion(s, guildID, channelID, msg.ID, userID, remaining)
+	}
 }
 
 func (h *SpoilerTTLHandler) isCallerAdmin(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
 	if i == nil || i.Member == nil {
 		return false
 	}
-	if (i.Member.Permissions & discordgo.PermissionAdministrator) != 0 {
+	if (i.Member.Permissions & (discordgo.PermissionAdministrator | discordgo.PermissionManageGuild)) != 0 {
 		return true
+	}
+	if h.cfg != nil {
+		for _, staffRoleID := range h.cfg.StaffRoleIDs {
+			for _, mr := range i.Member.Roles {
+				if mr != "" && mr == staffRoleID {
+					return true
+				}
+			}
+		}
 	}
 	guildID := i.GuildID
 	if guildID == "" && h.cfg != nil {
@@ -521,7 +597,7 @@ func (h *SpoilerTTLHandler) isCallerAdmin(s *discordgo.Session, i *discordgo.Int
 				return true
 			}
 			for _, r := range g.Roles {
-				if r != nil && (r.Permissions&discordgo.PermissionAdministrator) != 0 {
+				if r != nil && (r.Permissions&(discordgo.PermissionAdministrator|discordgo.PermissionManageGuild)) != 0 {
 					for _, mr := range i.Member.Roles {
 						if mr == r.ID {
 							return true
@@ -534,15 +610,33 @@ func (h *SpoilerTTLHandler) isCallerAdmin(s *discordgo.Session, i *discordgo.Int
 	return false
 }
 
-// IsSpoilerPhotoAttachment checks whether a Discord message attachment is a spoilered photo/image.
+// attachmentFlagIsSpoiler is Discord's API v10 attachment bitflag (1 << 3) indicating a spoilered attachment.
+const attachmentFlagIsSpoiler discordgo.MessageAttachmentFlags = 1 << 3
+
+// IsSpoilerPhotoAttachment checks whether a Discord message attachment is a spoilered photo/image/media file.
 func IsSpoilerPhotoAttachment(att *discordgo.MessageAttachment) bool {
-	if !IsPhotoAttachment(att) {
+	if att == nil {
 		return false
 	}
-	return strings.HasPrefix(strings.ToUpper(att.Filename), "SPOILER_")
+	isMedia := IsPhotoAttachment(att) || (att.Width > 0 && att.Height > 0) ||
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(att.ContentType)), "video/")
+	if !isMedia {
+		return false
+	}
+	if (att.Flags & attachmentFlagIsSpoiler) != 0 {
+		return true
+	}
+	upperName := strings.ToUpper(strings.TrimSpace(att.Filename))
+	if strings.HasPrefix(upperName, "SPOILER_") || strings.Contains(upperName, "SPOILER_") {
+		return true
+	}
+	if strings.Contains(strings.ToUpper(att.URL), "/SPOILER_") || strings.Contains(strings.ToUpper(att.ProxyURL), "/SPOILER_") {
+		return true
+	}
+	return false
 }
 
-// HasSpoilerPhotoAttachment returns true if the message contains at least one spoilered photo attachment.
+// HasSpoilerPhotoAttachment returns true if the attachment slice contains at least one spoilered photo attachment.
 func HasSpoilerPhotoAttachment(attachments []*discordgo.MessageAttachment) bool {
 	for _, att := range attachments {
 		if IsSpoilerPhotoAttachment(att) {
@@ -552,10 +646,47 @@ func HasSpoilerPhotoAttachment(attachments []*discordgo.MessageAttachment) bool 
 	return false
 }
 
+// HasSpoilerPhotoMessage checks whether a Discord message contains a spoilered photo attachment,
+// a forwarded spoilered photo snapshot, or a spoiler-tagged (||...||) image embed/link.
+func HasSpoilerPhotoMessage(msg *discordgo.Message) bool {
+	if msg == nil {
+		return false
+	}
+	if HasSpoilerPhotoAttachment(msg.Attachments) {
+		return true
+	}
+	for _, snap := range msg.MessageSnapshots {
+		if snap.Message != nil && HasSpoilerPhotoAttachment(snap.Message.Attachments) {
+			return true
+		}
+	}
+	// Check if message content wraps an image URL or image embed in Discord spoiler bars ||...||
+	if strings.Count(msg.Content, "||") >= 2 {
+		for _, emb := range msg.Embeds {
+			if emb == nil {
+				continue
+			}
+			if emb.Image != nil || emb.Thumbnail != nil || emb.Video != nil ||
+				strings.EqualFold(string(emb.Type), "image") || strings.EqualFold(string(emb.Type), "gifv") {
+				return true
+			}
+		}
+		lowerContent := strings.ToLower(msg.Content)
+		for _, ext := range []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".avif"} {
+			if strings.Contains(lowerContent, ext) && strings.Contains(lowerContent, "http") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (h *SpoilerTTLHandler) getDraft(guildID, userID string) spoilerTTLDraft {
-	key := draftKey(guildID, userID)
 	h.mu.RLock()
-	d, ok := h.drafts[key]
+	d, ok := h.drafts[draftKey(guildID, userID)]
+	if !ok {
+		d, ok = h.drafts[draftKey("", userID)]
+	}
 	h.mu.RUnlock()
 	if ok {
 		return d
@@ -572,6 +703,7 @@ func (h *SpoilerTTLHandler) getDraft(guildID, userID string) spoilerTTLDraft {
 func (h *SpoilerTTLHandler) setDraft(guildID, userID string, draft spoilerTTLDraft) {
 	h.mu.Lock()
 	h.drafts[draftKey(guildID, userID)] = draft
+	h.drafts[draftKey("", userID)] = draft
 	h.mu.Unlock()
 }
 

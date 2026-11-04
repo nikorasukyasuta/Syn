@@ -25,10 +25,11 @@ type HTTPClient interface {
 // FlashHandler coordinates Discord events for Flash and Dash ephemeral photo channels,
 // enforcing auto-spoilering and TTL-based auto-deletion.
 type FlashHandler struct {
-	svc        *service.FlashDashService
-	cfg        *config.Config
-	logger     *slog.Logger
-	httpClient HTTPClient
+	svc           *service.FlashDashService
+	spoilerTTLSvc *service.SpoilerTTLService
+	cfg           *config.Config
+	logger        *slog.Logger
+	httpClient    HTTPClient
 }
 
 // NewFlashHandler constructs a new FlashHandler.
@@ -50,6 +51,12 @@ func NewFlashHandler(
 // SetHTTPClient overrides the HTTP client for testing.
 func (h *FlashHandler) SetHTTPClient(client HTTPClient) {
 	h.httpClient = client
+}
+
+// SetSpoilerTTLService attaches the SpoilerTTLService so Flash & Dash channels
+// also respect shorter personal /privacy-mode timers set by users.
+func (h *FlashHandler) SetSpoilerTTLService(spoilerSvc *service.SpoilerTTLService) {
+	h.spoilerTTLSvc = spoilerSvc
 }
 
 // FlashCommandDefinition returns the Discord slash command schema for /flash.
@@ -356,6 +363,12 @@ func (h *FlashHandler) HandleMessageCreate(s *discordgo.Session, m *discordgo.Me
 	duration, isFlash := h.svc.GetChannelDuration(m.ChannelID)
 	if !isFlash {
 		return
+	}
+
+	if h.spoilerTTLSvc != nil {
+		if userTTL, ok := h.spoilerTTLSvc.GetUserTTL(m.GuildID, m.Author.ID); ok && userTTL > 0 && userTTL < duration {
+			duration = userTTL
+		}
 	}
 
 	// Enforce photo-only policy: reject text-only comments or non-photo attachments immediately
