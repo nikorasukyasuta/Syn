@@ -187,6 +187,7 @@ func main() {
 	spoilerTTLRepo := postgres.NewSpoilerTTLRepo(dbPool)
 	spoilerTTLSvc := service.NewSpoilerTTLService(spoilerTTLRepo, flashSvc, logger)
 	spoilerTTLHandler := handlers.NewSpoilerTTLHandler(spoilerTTLSvc, cfg, logger)
+	flashHandler.SetSpoilerTTLService(spoilerTTLSvc)
 
 	// Legal and Privacy Command Handlers
 	legalHandler := handlers.NewLegalHandler(cfg)

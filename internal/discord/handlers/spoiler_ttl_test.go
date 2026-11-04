@@ -336,5 +336,49 @@ func TestSpoilerTTLHandler_EphemeralPromptDropdownsAndConfirmButton(t *testing.T
 	if !repo.hasMessage("msg_admin_spoiler_1m") {
 		t.Fatal("expected admin 1-minute spoilered photo message to be scheduled for auto-deletion")
 	}
+
+	// 7. Attachment marked as spoiler via Discord API v10 attachment flag (1 << 3) without SPOILER_ prefix
+	flagSpoilerMsg := &discordgo.MessageCreate{
+		Message: &discordgo.Message{
+			ID:        "msg_admin_flag_spoiler",
+			ChannelID: "ch_general_nsfw",
+			GuildID:   "guild_123",
+			Author:    &discordgo.User{ID: "admin_1"},
+			Attachments: []*discordgo.MessageAttachment{
+				{
+					ID:          "att_flag",
+					Filename:    "photo.png",
+					ContentType: "image/png",
+					Flags:       1 << 3,
+				},
+			},
+		},
+	}
+	handler.HandleMessageCreate(session, flagSpoilerMsg)
+	if !repo.hasMessage("msg_admin_flag_spoiler") {
+		t.Fatal("expected attachment with spoiler flag (1<<3) to be scheduled for auto-deletion")
+	}
+
+	// 8. Admin with 1-minute /privacy-mode timer posting in a 30-minute Flash & Dash channel still gets 1m deletion
+	_ = flashSvc.ConfigureChannel(context.Background(), "guild_123", "ch_flash_30m", 30*time.Minute)
+	flashSpoilerMsg := &discordgo.MessageCreate{
+		Message: &discordgo.Message{
+			ID:        "msg_admin_in_flash",
+			ChannelID: "ch_flash_30m",
+			GuildID:   "guild_123",
+			Author:    &discordgo.User{ID: "admin_1"},
+			Attachments: []*discordgo.MessageAttachment{
+				{
+					ID:          "att_flash_admin",
+					Filename:    "SPOILER_flash.jpg",
+					ContentType: "image/jpeg",
+				},
+			},
+		},
+	}
+	handler.HandleMessageCreate(session, flashSpoilerMsg)
+	if !repo.hasMessage("msg_admin_in_flash") {
+		t.Fatal("expected admin 1-minute timer to schedule deletion even inside a 30-minute Flash & Dash channel")
+	}
 }
 
