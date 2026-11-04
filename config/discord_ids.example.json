@@ -23,6 +23,7 @@
     "ticket_category_id": "",
     "ticket_log_channel_id": "",
     "staff_alert_channel_id": "",
+    "announcement_channel_id": "1560208751699435620",
     "honeypot_channel_id": ""
   },
   "settings": {

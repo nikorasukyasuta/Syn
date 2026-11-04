@@ -87,13 +87,14 @@ func DefaultTicketPanelPost(guildID string, panelType TicketPanelType) *TicketPa
 		return &TicketPanelPost{
 			GuildID:   guildID,
 			PanelType: PanelTypeIDVerification,
-			Title:     "🪪 18+ Age & ID Verification",
-			Description: "To access 18+ verified and mature community channels, complete our private age verification flow:\n\n" +
-				"**How It Works:**\n" +
-				"1. Click **Start 18+ ID Verification** below to open a private channel visible only to you and Server Staff.\n" +
-				"2. Upload **clear photo(s)** showing your government-issued ID (**DOB visible**, all other personal details covered/blurred) next to a **handwritten physical note** with your Discord username and today's date\n" +
-				" and a selfie of you holding your government-issued ID\n" +
-				"3. Once approved by Staff, you receive the **18+ Verified** role and the verification channel is **permanently deleted**.",
+			Title:     "🪪  18+ Age & ID Verification",
+			Description: "Gain full access to verified adult discussion and mature community spaces.\n\n" +
+				"**Verification Checklist:**\n" +
+				"• **Government-Issued Photo ID** — showing your date of birth clearly *(all other personal details may be blurred or covered)*\n" +
+				"• **Handwritten Verification Note** — a physical paper note next to your ID showing your Discord username & today's date\n" +
+				"• **Selfie with ID** — a clear photo of you holding your physical ID next to your face\n\n" +
+				"**Privacy Commitment:**\n" +
+				"Your session takes place in an isolated, encrypted channel visible only to you and authorized reviewers. Once approved, **your images and channel are permanently deleted**.",
 			Color:        0x5865F2, // Blurple
 			ButtonLabel:  "Start 18+ ID Verification",
 			ButtonEmoji:  "🪪",
@@ -106,13 +107,13 @@ func DefaultTicketPanelPost(guildID string, panelType TicketPanelType) *TicketPa
 		return &TicketPanelPost{
 			GuildID:   guildID,
 			PanelType: PanelTypeSupport,
-			Title:     "💬 General Support Ticket",
-			Description: "Have a general question about the server, community events, or need guidance from our team?\n\n" +
+			Title:     "💬  General Support & Inquiries",
+			Description: "Need guidance, assistance with server features, or have a question for our team?\n\n" +
 				"**How It Works:**\n" +
-				"1. Click **Open Support Ticket** below to create a private support channel.\n" +
-				"2. Describe your question or inquiry so a Staff member or Server Helper can assist you.\n" +
-				"3. Click **Close Ticket** inside the channel once your question has been answered.",
-			Color:        0x2ECC71, // Green
+				"• Click **Open Support Ticket** below to launch a private dialogue with Staff & Helpers.\n" +
+				"• Share your question or request with as much detail as possible.\n" +
+				"• A team member will assist you promptly. When finished, click **Close Ticket**.",
+			Color:        0x2ECC71, // Emerald Green
 			ButtonLabel:  "Open Support Ticket",
 			ButtonEmoji:  "💬",
 			ButtonStyle:  3, // SuccessButton
@@ -124,14 +125,14 @@ func DefaultTicketPanelPost(guildID string, panelType TicketPanelType) *TicketPa
 		return &TicketPanelPost{
 			GuildID:   guildID,
 			PanelType: PanelTypeAccountIssue,
-			Title:     "👤 Account & Role Issue Ticket",
-			Description: "Experiencing issues with your server roles, channel permissions, or transferring verification from a previous Discord account?\n\n" +
+			Title:     "👤  Account & Role Assistance",
+			Description: "Having trouble with your server roles, channel access permissions, or account migration?\n\n" +
 				"**How It Works:**\n" +
-				"1. Click **Open Account Issue Ticket** below to open a private session with Staff.\n" +
-				"2. Explain the missing roles, permission issue, or account change.\n" +
-				"3. Staff will review your account records and update your roles accordingly.",
+				"• Click **Open Account Ticket** below to open a private session with Server Staff.\n" +
+				"• Describe the missing roles, permission anomaly, or account change.\n" +
+				"• Staff will verify your account status and adjust your profile permissions.",
 			Color:        0x3498DB, // Blue
-			ButtonLabel:  "Open Account Issue Ticket",
+			ButtonLabel:  "Open Account Ticket",
 			ButtonEmoji:  "👤",
 			ButtonStyle:  2, // SecondaryButton
 			CustomID:     PanelTypeAccountIssue.CustomID(),
@@ -142,14 +143,14 @@ func DefaultTicketPanelPost(guildID string, panelType TicketPanelType) *TicketPa
 		return &TicketPanelPost{
 			GuildID:   guildID,
 			PanelType: PanelTypeReport,
-			Title:     "🚨 Member & Rule Violation Report",
-			Description: "Need to confidentially report harassment, boundary/safeword violations, or a breach of community rules?\n\n" +
+			Title:     "🚨  Confidential Safety & Incident Report",
+			Description: "Report harassment, boundary violations, safeword infractions, or server rule breaches in strict confidence.\n\n" +
 				"**How It Works:**\n" +
-				"1. Click **Open Report Ticket** below to open a strictly confidential channel with Server Staff.\n" +
-				"2. Provide the member's username/ID, relevant context, message links, or screenshots.\n" +
-				"3. Staff will investigate promptly and take appropriate moderation action.",
-			Color:        0xE74C3C, // Red
-			ButtonLabel:  "Open Report Ticket",
+				"• Click **Open Confidential Report** below to reach Server Staff directly.\n" +
+				"• Provide the username/ID, incident context, message links, and any relevant screenshots.\n" +
+				"• Our administrative team handles all reports with strict privacy and care.",
+			Color:        0xED4245, // Coral Red
+			ButtonLabel:  "Open Confidential Report",
 			ButtonEmoji:  "🚨",
 			ButtonStyle:  4, // DangerButton
 			CustomID:     PanelTypeReport.CustomID(),
@@ -160,14 +161,14 @@ func DefaultTicketPanelPost(guildID string, panelType TicketPanelType) *TicketPa
 		return &TicketPanelPost{
 			GuildID:   guildID,
 			PanelType: PanelTypeBug,
-			Title:     "🐛 Bot & Server Bug Report",
-			Description: "Found a technical glitch with the Syn bot, broken reaction roles, or a channel configuration bug?\n\n" +
+			Title:     "🐛  Technical Bug & Bot Diagnostics",
+			Description: "Encountered a glitch with bot commands, reaction panels, or server integrations?\n\n" +
 				"**How It Works:**\n" +
-				"1. Click **Open Bug Report** below to open a technical report channel.\n" +
-				"2. Share what command or button you used, what happened, and any error messages displayed.\n" +
-				"3. Our administrators will diagnose and resolve the issue.",
+				"• Click **Report Technical Bug** below to open a technical support thread.\n" +
+				"• Include the command/button triggered, what happened, and any error message displayed.\n" +
+				"• Our developers and administrators will investigate and deploy a fix.",
 			Color:        0xF59E0B, // Amber
-			ButtonLabel:  "Open Bug Report",
+			ButtonLabel:  "Report Technical Bug",
 			ButtonEmoji:  "🐛",
 			ButtonStyle:  2, // SecondaryButton
 			CustomID:     PanelTypeBug.CustomID(),

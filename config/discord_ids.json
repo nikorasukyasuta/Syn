@@ -17,7 +17,8 @@
     "ticket_category_id": "1562256127197057094",
     "ticket_log_channel_id": "1562599674060472390",
     "staff_alert_channel_id": "1562682670549438486",
-    "announcement_channel_id": "1560208751699435620"
+    "announcement_channel_id": "1560208751699435620",
+    "honeypot_channel_id": "1567456992287531128"
   },
   "settings": {
     "safeword_emoji": "🛑",

@@ -259,7 +259,7 @@ func BuildSingleTicketPanelEmbed(post *domain.TicketPanelPost) *discordgo.Messag
 		Description: post.Description,
 		Color:       color,
 		Footer: &discordgo.MessageEmbedFooter{
-			Text: fmt.Sprintf("Syn Ticket Hub • Flow: %s", post.PanelType),
+			Text: "Syn Support Suite • Confidential & Encrypted Channel",
 		},
 	}
 }
@@ -290,14 +290,14 @@ func BuildSingleTicketPanelButton(post *domain.TicketPanelPost) []discordgo.Mess
 // BuildTicketPanelEmbed generates the persistent ticket creation panel embed.
 func BuildTicketPanelEmbed() *discordgo.MessageEmbed {
 	return &discordgo.MessageEmbed{
-		Title: "🎫 Server Support & Report Tickets",
-		Description: "Need assistance or want to report an issue?\n" +
-			"Click the button below that corresponds to your request to open a private ticket.\n\n" +
-			"🚨 **Report Ticket** — Report server misconduct, harassment, or rule violations\n" +
-			"🐛 **Bug Ticket** — Report bot glitches or server technical bugs\n" +
-			"👤 **Account Issue Ticket** — Assistance with roles, access, or account issues\n" +
-			"💬 **Support Ticket** — General server questions and support\n\n" +
-			"*Note: For 18+ age verification, please use the dedicated 🪪 **18+ ID Verification** panel.*",
+		Title: "🎫  Server Support & Incident Desk",
+		Description: "Need assistance, have questions, or want to report an issue confidentially?\n" +
+			"Select the button corresponding to your request below to open a private ticket.\n\n" +
+			"🚨 **Confidential Report** — Report harassment, boundary violations, or rule infractions\n" +
+			"💬 **General Support** — Inquiries, community questions, or staff assistance\n" +
+			"👤 **Account & Roles** — Assistance with roles, permissions, or account changes\n" +
+			"🐛 **Technical Bug** — Report glitches with bot commands, reaction panels, or features\n\n" +
+			"🔒 *All tickets are private channels visible only to you and authorized server staff.*",
 		Color: 0x5865F2,
 		Footer: &discordgo.MessageEmbedFooter{
 			Text: "Syn Support Suite • Enterprise Security",
